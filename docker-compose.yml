@@ -1,0 +1,52 @@
+# Local deployment of the LLM Semantic Cache with production-like process
+# boundaries. Each component is its own container; they talk over REST/HTTP.
+services:
+  embedding:
+    build: ./embedding_service
+    ports:
+      - "8001:8001"
+
+  vectorstore:
+    build: ./vector_store_service
+    ports:
+      - "8002:8002"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    # Reserved for week 8 persistence; not yet used by the orchestrator.
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: deploy/orchestrator.Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      ORCH_ADDR: ":8080"
+      EMBEDDING_URL: "http://embedding:8001"
+      VECTORSTORE_URL: "http://vectorstore:8002"
+      REDIS_ADDR: "redis:6379"
+      SIMILARITY_THRESHOLD: "${SIMILARITY_THRESHOLD:-0.25}"
+      CACHE_CAPACITY: "${CACHE_CAPACITY:-1000}"
+      CACHE_POLICY: "${CACHE_POLICY:-lru}"
+      LLM_MODE: "${LLM_MODE:-stub}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENAI_MODEL: "${OPENAI_MODEL:-gpt-4o-mini}"
+    depends_on:
+      - embedding
+      - vectorstore
+      - redis
+
+  # On-demand client: `docker compose run --rm cli query "hello"`
+  cli:
+    build:
+      context: .
+      dockerfile: deploy/cli.Dockerfile
+    environment:
+      ORCH_URL: "http://orchestrator:8080"
+    depends_on:
+      - orchestrator
+    profiles:
+      - tools
