@@ -1,0 +1,28 @@
+# Env / secrets
+.env
+*.env
+!.env.example
+
+# Go
+/bin/
+*.exe
+*.test
+*.out
+vendor/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Vector index / data
+*.faiss
+data/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
