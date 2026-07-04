@@ -1,6 +1,7 @@
 // Package vectorstore is the orchestrator's client for the vector-store service.
-// The demo backend is an in-memory brute-force search; the same REST contract
-// will front a FAISS index later without changing this client.
+// The backend is a FAISS index (see vector_store_service/app/main.py); this
+// client just speaks the REST contract, so it never needed to change when
+// the backend swapped from brute-force to FAISS.
 package vectorstore
 
 import (
@@ -74,6 +75,17 @@ func (c *Client) Upsert(ctx context.Context, vec []float64) (string, error) {
 }
 
 // Delete removes a vector by id (used by eviction).
+//
+// FIX: this previously ignored the response status code entirely, so a
+// 404 (or any other error) from the vector store was silently treated as
+// a success. That's dangerous specifically because eviction relies on
+// Delete() actually working -- if it silently "succeeds" without really
+// removing the vector, the vector store and Redis fall out of sync (the
+// same failure mode IndexIDMap was introduced to prevent on the FAISS
+// side -- see vector_store_service/app/main.py). Now it checks the
+// status code the same way every other method here already does via
+// post(), and reports a proper error if the deletion didn't actually
+// happen.
 func (c *Client) Delete(ctx context.Context, id string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/entries/"+id, nil)
 	if err != nil {
@@ -81,9 +93,12 @@ func (c *Client) Delete(ctx context.Context, id string) error {
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("vector store unreachable: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("vector store returned %d", resp.StatusCode)
+	}
 	return nil
 }
 
@@ -109,6 +124,37 @@ func (c *Client) Size(ctx context.Context) (int, error) {
 // Flush clears all stored vectors.
 func (c *Client) Flush(ctx context.Context) error {
 	return c.post(ctx, "/flush", []byte("{}"), &struct{}{})
+}
+
+// RebuildEntry pairs a previously-saved reply's id with its vector, for
+// restoring the FAISS index after a restart. Mirrors RebuildEntry in
+// vector_store_service/app/main.py exactly -- field names and JSON tags
+// must match that contract.
+type RebuildEntry struct {
+	ID     string    `json:"id"`
+	Vector []float64 `json:"vector"`
+}
+
+type rebuildRequest struct {
+	Entries []RebuildEntry `json:"entries"`
+}
+
+type rebuildResponse struct {
+	Restored int `json:"restored"`
+}
+
+// Rebuild repopulates the (empty, RAM-only) FAISS index from durably-stored
+// entries, e.g. everything persistence.Store still has on disk. Intended
+// to be called once at startup, after Redis wiring lands (week 8) -- the
+// vector store has no memory of its own past once its container restarts,
+// so whatever owns startup needs to replay the surviving entries back in.
+func (c *Client) Rebuild(ctx context.Context, entries []RebuildEntry) (int, error) {
+	body, _ := json.Marshal(rebuildRequest{Entries: entries})
+	var out rebuildResponse
+	if err := c.post(ctx, "/rebuild", body, &out); err != nil {
+		return 0, err
+	}
+	return out.Restored, nil
 }
 
 func (c *Client) post(ctx context.Context, path string, body []byte, out any) error {
