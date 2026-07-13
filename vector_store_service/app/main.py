@@ -115,6 +115,19 @@ class UpsertResponse(BaseModel):
     id: str
 
 
+class RebuildEntry(BaseModel):
+    id: str
+    vector: list[float]
+
+
+class RebuildRequest(BaseModel):
+    entries: list[RebuildEntry]
+
+
+class RebuildResponse(BaseModel):
+    restored: int
+
+
 def _to_np(vec: list[float]) -> np.ndarray:
     """FAISS refuses plain Python lists -- it insists on numpy arrays.
     This just repackages the same numbers into the format FAISS demands."""
@@ -201,6 +214,54 @@ def upsert(req: UpsertRequest) -> UpsertResponse:
     return UpsertResponse(id=entry_id)
 
 
+@app.post("/rebuild", response_model=RebuildResponse)
+def rebuild(req: RebuildRequest) -> RebuildResponse:
+    """Restore the RAM-only FAISS index from durable Redis cache entries.
+
+    Redis owns the durable cache entries, including their public UUID and
+    vector. When this service restarts, FAISS starts empty, so the orchestrator
+    calls this endpoint once at startup with everything Redis still has.
+    """
+    global _index, _base_index, _next_int_id
+
+    _base_index = faiss.IndexFlatIP(DIM)
+    _index = faiss.IndexIDMap(_base_index)
+    _uuid_to_int.clear()
+    _int_to_uuid.clear()
+    _next_int_id = 0
+
+    if not req.entries:
+        return RebuildResponse(restored=0)
+
+    vectors: list[np.ndarray] = []
+    int_ids: list[int] = []
+
+    for entry in req.entries:
+        if len(entry.vector) != DIM:
+            raise HTTPException(
+                status_code=400,
+                detail=f"vector for entry {entry.id!r} has dimension {len(entry.vector)}, want {DIM}",
+            )
+        if entry.id in _uuid_to_int:
+            raise HTTPException(
+                status_code=400,
+                detail=f"duplicate entry id {entry.id!r}",
+            )
+
+        int_id = _next_int_id
+        _next_int_id += 1
+        _uuid_to_int[entry.id] = int_id
+        _int_to_uuid[int_id] = entry.id
+        vectors.append(np.array(entry.vector, dtype="float32"))
+        int_ids.append(int_id)
+
+    matrix = np.array(vectors, dtype="float32")
+    ids = np.array(int_ids, dtype="int64")
+    _index.add_with_ids(matrix, ids)
+
+    return RebuildResponse(restored=len(req.entries))
+
+
 @app.delete("/entries/{entry_id}")
 def delete(entry_id: str) -> dict:
     # entry_id comes from the URL itself (path parameter), not a JSON
@@ -220,12 +281,9 @@ def delete(entry_id: str) -> dict:
     # our one number into the exact numpy shape FAISS's C++ code demands
     # -- remove_ids() always expects an array, even for a single id.
     #
-    # NOTE: this is exactly the operation week 9's eviction feature will
-    # call once it's wired up -- and exactly why the id-pairing between
-    # vector store and Redis has to stay perfectly in sync (see IndexIDMap
-    # comment above). Also: the Go client's Delete() currently doesn't
-    # check whether this call actually succeeded -- worth fixing before
-    # eviction starts relying on it.
+    # NOTE: this is exactly the operation eviction calls -- and exactly
+    # why the id-pairing between vector store and Redis has to stay perfectly
+    # in sync (see IndexIDMap comment above).
     _index.remove_ids(np.array([int_id], dtype="int64"))
 
     return {"status": "deleted"}

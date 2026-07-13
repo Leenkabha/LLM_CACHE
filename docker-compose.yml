@@ -15,7 +15,6 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
-    # Reserved for week 8 persistence; not yet used by the orchestrator.
 
   orchestrator:
     build:

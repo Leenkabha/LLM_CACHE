@@ -24,7 +24,7 @@ Orchestrator :8080 (Go)
 | Orchestrator | Go | 8080 | Brain — drives the full flow |
 | Embedding service | Python | 8001 | Converts text → vector |
 | Vector store service | Python | 8002 | Stores & searches vectors |
-| Redis | — | 6379 | Persistent reply storage (wired in week 8) |
+| Redis | — | 6379 | Persistent cache-entry storage, async queue, and restart recovery |
 
 ---
 
@@ -141,7 +141,19 @@ curl -s localhost:8001/health
 curl -s localhost:8002/health
 ```
 
-Each should return: `{"status":"ok"}`
+The embedding and vector-store services return: `{"status":"ok"}`.
+
+The orchestrator returns a dependency-aware health response:
+```json
+{
+  "status": "ok",
+  "checks": {
+    "embedding": "ok",
+    "vectorstore": "ok",
+    "redis": "ok"
+  }
+}
+```
 
 ---
 
@@ -195,11 +207,20 @@ curl -s localhost:8080/stats
 curl -s -X POST localhost:8080/flush
 ```
 
-### Change eviction policy
+### Eviction policy
+
+The active eviction policy is selected at startup with `CACHE_POLICY=lru` or
+`CACHE_POLICY=lfu`.
+
+Runtime policy switching is intentionally not supported because LRU and LFU own
+different policy-specific metadata. Calling `/policy` with the current policy is
+accepted; calling it with a different policy returns an error telling you to
+change `CACHE_POLICY` and restart.
+
 ```bash
 curl -s -X POST localhost:8080/policy \
   -H "Content-Type: application/json" \
-  -d '{"policy":"lfu"}'
+  -d '{"policy":"lru"}'
 ```
 
 ---
@@ -220,12 +241,16 @@ curl -s -X POST localhost:8080/policy \
 
 | Component | Current state | Planned replacement |
 |-----------|--------------|-------------------|
-| Embedder | Hash-based stub — not semantic | Real ML model: `all-MiniLM-L6-v2` |
-| Vector Store | Brute-force in-memory search | FAISS index |
-| LLM | Returns a hardcoded string | OpenAI API |
-| Persistence | In-process memory | Redis |
+| Embedder | Real sentence-transformers model: `all-MiniLM-L6-v2` | Tune model/threshold if needed |
+| Vector Store | FAISS `IndexIDMap` in RAM, rebuilt from Redis on startup | Optional persisted FAISS index |
+| LLM | `stub` mode for local demos; `openai` mode via OpenAI Responses API | Provider-specific tuning |
+| Persistence | Redis-backed cache entries: `id`, `prompt`, `reply`, `vector`, `created_at` | Optional retry/dead-letter handling |
+| Async update | Redis Streams queue + worker | Optional pending-job recovery improvements |
+| Eviction | Pluggable LRU/LFU policy metadata, selected at startup | Optional LFU aging/optimized LFU |
 
-Because the embedder is a stub, only **lexically similar** prompts (sharing the same words) will hit the cache right now. "What is virtual memory?" and "Explain virtual memory" will **not** hit each other until the real ML embedder is in place.
+Cache entries are intentionally policy-agnostic. LRU owns recency metadata and
+LFU owns frequency metadata separately, so the cache schema does not depend on a
+specific policy.
 
 ---
 
@@ -235,9 +260,10 @@ Because the embedder is a stub, only **lexically similar** prompts (sharing the 
 |--------|------|-----------------|
 | A | Real embedder (ML model) | `embedding_service/app/main.py`, `internal/embedder/client.go` |
 | B | Real vector store (FAISS) | `vector_store_service/app/main.py`, `internal/vectorstore/client.go` |
-| C | Real LLM + Redis persistence | `internal/llm/client.go`, `internal/persistence/store.go` |
+| C | Real LLM + Redis persistence/policies | `internal/llm/client.go`, `internal/persistence/`, `internal/policy/` |
 
-All three are independent — nobody needs to touch `internal/orchestrator/service.go`.
+The main service flow lives in `internal/orchestrator/service.go`, so persistence
+and policy changes may need orchestrator integration.
 
 ---
 
@@ -263,11 +289,15 @@ LLM_CACHE/
 ├── internal/
 │   ├── orchestrator/service.go   # full request flow logic
 │   ├── config/config.go          # env var configuration
+│   ├── cachequeue/redis_stream.go # Redis Streams async cache-update queue
 │   ├── embedder/client.go        # HTTP client → embedding service
 │   ├── vectorstore/client.go     # HTTP client → vector store service
 │   ├── llm/client.go             # LLM backend (stub / openai)
-│   ├── persistence/store.go      # reply storage (memory / redis)
-│   └── policy/policy.go          # eviction policy (lru / lfu)
+│   ├── persistence/store.go      # cache-entry storage interface + memory implementation
+│   ├── persistence/redis_store.go # Redis-backed cache-entry storage
+│   ├── policy/policy.go          # pluggable eviction policy manager
+│   ├── policy/lru.go             # LRU policy implementation
+│   └── policy/lfu.go             # LFU policy implementation
 ├── embedding_service/
 │   └── app/main.py               # FastAPI embedding service
 ├── vector_store_service/

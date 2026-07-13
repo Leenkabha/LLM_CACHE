@@ -1,53 +1,106 @@
-// Package persistence stores cached replies and metadata keyed by entry id.
+// Package persistence stores cache entries keyed by entry id.
 // The HLD uses Redis as the source of truth; v0 ships an in-memory store
 // behind the same interface so the orchestrator logic is already correct.
 package persistence
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
-// Store maps a vector-store entry id to its cached reply.
-type Store interface {
-	Save(id, reply string) error
-	Load(id string) (string, bool)
-	Delete(id string) error
-	Flush() error
+// Entry is the policy-agnostic cache record.
+//
+// It intentionally contains only the core data needed to restore and serve a
+// cached response. Eviction metadata belongs to the active policy
+// implementation, so LRU/LFU can remain pluggable and policy can be changed on
+// restart without changing the cache schema.
+type Entry struct {
+	ID        string    `json:"id"`
+	Prompt    string    `json:"prompt"`
+	Reply     string    `json:"reply"`
+	Vector    []float64 `json:"vector"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
-// MemoryStore is the v0 in-memory implementation.
-// TODO(week 8): add a RedisStore implementing this same interface.
+// Store maps a vector-store entry id to its policy-agnostic cache entry.
+type Store interface {
+	Save(entry Entry) error
+	Load(id string) (Entry, bool)
+	List() ([]Entry, error)
+	Size() (int, error)
+	Delete(id string) error
+	Flush() error
+	Health() error
+}
+
+// MemoryStore is an in-memory implementation used by tests and local fallback
+// scenarios. Production orchestration uses RedisStore.
 type MemoryStore struct {
 	mu      sync.RWMutex
-	replies map[string]string
+	entries map[string]Entry
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{replies: make(map[string]string)}
+	return &MemoryStore{entries: make(map[string]Entry)}
 }
 
-func (m *MemoryStore) Save(id, reply string) error {
+func (m *MemoryStore) Save(entry Entry) error {
 	m.mu.Lock()
-	m.replies[id] = reply
+	entry.Vector = cloneVector(entry.Vector)
+	m.entries[entry.ID] = entry
 	m.mu.Unlock()
 	return nil
 }
 
-func (m *MemoryStore) Load(id string) (string, bool) {
+func (m *MemoryStore) Load(id string) (Entry, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	reply, ok := m.replies[id]
-	return reply, ok
+	entry, ok := m.entries[id]
+	entry.Vector = cloneVector(entry.Vector)
+	return entry, ok
+}
+
+func (m *MemoryStore) List() ([]Entry, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	entries := make([]Entry, 0, len(m.entries))
+	for _, entry := range m.entries {
+		entry.Vector = cloneVector(entry.Vector)
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+func (m *MemoryStore) Size() (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.entries), nil
 }
 
 func (m *MemoryStore) Delete(id string) error {
 	m.mu.Lock()
-	delete(m.replies, id)
+	delete(m.entries, id)
 	m.mu.Unlock()
 	return nil
 }
 
 func (m *MemoryStore) Flush() error {
 	m.mu.Lock()
-	m.replies = make(map[string]string)
+	m.entries = make(map[string]Entry)
 	m.mu.Unlock()
 	return nil
+}
+
+func (m *MemoryStore) Health() error {
+	return nil
+}
+
+func cloneVector(vec []float64) []float64 {
+	if vec == nil {
+		return nil
+	}
+	out := make([]float64, len(vec))
+	copy(out, vec)
+	return out
 }

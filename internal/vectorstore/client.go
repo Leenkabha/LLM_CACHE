@@ -126,6 +126,22 @@ func (c *Client) Flush(ctx context.Context) error {
 	return c.post(ctx, "/flush", []byte("{}"), &struct{}{})
 }
 
+func (c *Client) Health(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("vector store unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("vector store returned %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // RebuildEntry pairs a previously-saved reply's id with its vector, for
 // restoring the FAISS index after a restart. Mirrors RebuildEntry in
 // vector_store_service/app/main.py exactly -- field names and JSON tags
@@ -143,11 +159,9 @@ type rebuildResponse struct {
 	Restored int `json:"restored"`
 }
 
-// Rebuild repopulates the (empty, RAM-only) FAISS index from durably-stored
-// entries, e.g. everything persistence.Store still has on disk. Intended
-// to be called once at startup, after Redis wiring lands (week 8) -- the
-// vector store has no memory of its own past once its container restarts,
-// so whatever owns startup needs to replay the surviving entries back in.
+// Rebuild repopulates the RAM-only FAISS index from durably-stored entries.
+// The vector store has no memory of its own past once its container restarts,
+// so the orchestrator replays the surviving Redis entries on startup.
 func (c *Client) Rebuild(ctx context.Context, entries []RebuildEntry) (int, error) {
 	body, _ := json.Marshal(rebuildRequest{Entries: entries})
 	var out rebuildResponse

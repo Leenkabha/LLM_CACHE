@@ -16,14 +16,14 @@ end-to-end with *stub* internals, then we replace each stub with the real
 implementation. The stubs already speak the final REST contracts, so each
 upgrade is local to one service.
 
-| Concern | v0 (now, stub) | Target (per HLD) |
+| Concern | Current state | Remaining target |
 |---|---|---|
-| Embeddings | deterministic hash vector | sentence-transformers `all-MiniLM-L6-v2` |
-| Vector search | in-memory brute-force cosine | FAISS index |
-| LLM | canned reply | OpenAI API (+ timeout/retry) |
-| Persistence | in-memory map | Redis (replies, metadata, counters) |
-| Async update | goroutine | Redis Streams queue |
-| Eviction | none (capacity ignored) | LRU / LFU via Policy Manager |
+| Embeddings | sentence-transformers `all-MiniLM-L6-v2` | Threshold/model tuning |
+| Vector search | FAISS index with id map, rebuilt from Redis on startup | Optional persisted FAISS index |
+| LLM | stub mode + OpenAI Responses API backend with timeout/retry | Provider-specific tuning |
+| Persistence | Redis-backed policy-agnostic cache entries | Optional retry/dead-letter handling |
+| Async update | Redis Streams queue + worker | Optional pending-job recovery improvements |
+| Eviction | Pluggable LRU/LFU via Policy Manager | Optional LFU aging/optimization |
 
 ## Architecture (target)
 
@@ -44,7 +44,8 @@ embedding model, vector DB, and LLM provider are all replaceable.
 - `POST /query` `{prompt}` → `{reply, cache_hit, distance, latency_ms, source}`
 - `GET /stats` → `{hits, misses, hit_rate, size, policy}`
 - `POST /flush` → clears cache + counters
-- `POST /policy` `{policy}` → switch `lru`/`lfu`
+- `POST /policy` `{policy}` → validate current startup policy; changing policy
+  requires `CACHE_POLICY` + restart
 - `GET /health`
 
 **Embedding service** (`:8001`)
@@ -54,6 +55,7 @@ embedding model, vector DB, and LLM provider are all replaceable.
 **Vector store service** (`:8002`)
 - `POST /search` `{vector, top_k, threshold}` → `{hit, id, distance}`
 - `POST /upsert` `{vector}` → `{id}`
+- `POST /rebuild` `{entries:[{id, vector}]}` → `{restored}`
 - `DELETE /entries/{id}`, `GET /size`, `POST /flush`, `GET /health`
 
 > Distance convention: **cosine distance** (`1 - cosine similarity`). Lower is
@@ -63,16 +65,15 @@ embedding model, vector DB, and LLM provider are all replaceable.
 
 - [x] **Wk 1–4 — Scaffold & contracts.** Repo structure, REST contracts,
   walking skeleton wired end-to-end with stubs, docker-compose, this plan.
-- [ ] **Wk 5 — Real embeddings.** Replace `embed_text` with sentence-transformers
+- [x] **Wk 5 — Real embeddings.** Replace `embed_text` with sentence-transformers
   `all-MiniLM-L6-v2`. Keep `dim=384` so it's a drop-in.
-- [ ] **Wk 6 — FAISS.** Swap the in-memory store for a FAISS index + id map.
-- [ ] **Wk 7 — Orchestrator hardening.** Already a Go skeleton; add health
-  fan-out to downstreams, timeouts, structured logging.
-- [ ] **Wk 8 — LLM + Redis.** Implement the OpenAI backend (timeout + retry);
-  add `RedisStore` implementing `persistence.Store`; rebuild index from Redis on
-  startup.
-- [ ] **Wk 9 — Policies + async queue.** LRU/LFU eviction in the Policy Manager;
-  move cache updates onto a Redis Streams queue with a worker.
+- [x] **Wk 6 — FAISS.** Swap the in-memory store for a FAISS index + id map.
+- [x] **Wk 7 — Orchestrator hardening.** Health fan-out to embedding,
+  vectorstore, and Redis; downstream clients use timeouts.
+- [x] **Wk 8 — LLM + Redis.** OpenAI backend with timeout/retry, RedisStore,
+  and rebuild-from-Redis are implemented.
+- [x] **Wk 9 — Policies + async queue.** LRU/LFU eviction and Redis Streams
+  cache-update worker are implemented.
 - [ ] **Wk 10 — CLI polish.** `query`, `stats`, `flush`, `policy` (skeleton done);
   add nicer output and error messages.
 - [ ] **Wk 11 — Benchmark & test.** Threshold tuning on a representative prompt
@@ -83,8 +84,9 @@ embedding model, vector DB, and LLM provider are all replaceable.
 
 1. Default similarity **threshold** — tune empirically once real embeddings land.
 2. **Long prompts** — reject / truncate / chunk / summarize before embedding?
-3. **FAISS persistence** — rebuild from Redis on startup vs. store the index file.
-4. **LLM retry** behavior on timeout / provider error.
+3. **FAISS persistence** — current decision: rebuild from Redis on startup.
+4. **LLM retry** behavior on timeout / provider error — current version retries
+   failed OpenAI requests up to 3 attempts.
 5. **Metrics** stack — candidate Prometheus + Grafana (secondary feature).
 6. **Web chat UI** — final submission or follow-up extension?
 

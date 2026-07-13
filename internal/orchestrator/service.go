@@ -5,10 +5,14 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
+	"github.com/leenkabha/llm_cache/internal/cachequeue"
 	"github.com/leenkabha/llm_cache/internal/config"
 	"github.com/leenkabha/llm_cache/internal/embedder"
 	"github.com/leenkabha/llm_cache/internal/llm"
@@ -23,6 +27,7 @@ type Service struct {
 	vstore *vectorstore.Client
 	llm    llm.Backend
 	store  persistence.Store
+	queue  *cachequeue.RedisStreamQueue
 	policy *policy.Manager
 
 	mu     sync.Mutex
@@ -30,15 +35,34 @@ type Service struct {
 	misses int
 }
 
-func New(cfg config.Config) *Service {
-	return &Service{
+func New(cfg config.Config) (*Service, error) {
+	store, err := persistence.NewRedisStore(cfg.RedisAddr)
+	if err != nil {
+		return nil, fmt.Errorf("connect persistence store at %s: %w", cfg.RedisAddr, err)
+	}
+	queue, err := cachequeue.NewRedisStreamQueue(cfg.RedisAddr)
+	if err != nil {
+		return nil, fmt.Errorf("connect cache-update queue at %s: %w", cfg.RedisAddr, err)
+	}
+
+	svc := &Service{
 		cfg:    cfg,
 		embed:  embedder.New(cfg.EmbeddingURL),
 		vstore: vectorstore.New(cfg.VectorStoreURL),
 		llm:    llm.New(cfg.LLMMode, cfg.OpenAIKey, cfg.OpenAIModel),
-		store:  persistence.NewMemoryStore(),
+		store:  store,
+		queue:  queue,
 		policy: policy.New(cfg.Policy),
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := svc.rebuildFromStore(ctx); err != nil {
+		return nil, err
+	}
+	go svc.runCacheWorker(context.Background())
+
+	return svc, nil
 }
 
 // Routes registers all orchestrator HTTP endpoints.
@@ -87,10 +111,11 @@ func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request) {
 
 	// Cache hit: reply lives in persistence, keyed by the matched entry id.
 	if match != nil {
-		if reply, ok := s.store.Load(match.ID); ok {
+		if entry, ok := s.store.Load(match.ID); ok {
+			s.policy.OnHit(match.ID)
 			s.recordHit()
 			writeJSON(w, queryResponse{
-				Reply:     reply,
+				Reply:     entry.Reply,
 				CacheHit:  true,
 				Distance:  match.Distance,
 				LatencyMS: time.Since(start).Milliseconds(),
@@ -108,7 +133,9 @@ func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordMiss()
-	go s.updateCache(req.Prompt, vec, reply)
+	if err := s.queue.Enqueue(ctx, cachequeue.Job{Prompt: req.Prompt, Reply: reply, Vector: vec}); err != nil {
+		log.Printf("enqueue cache update failed: %v", err)
+	}
 
 	writeJSON(w, queryResponse{
 		Reply:     reply,
@@ -119,17 +146,118 @@ func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// updateCache stores a new <vector, reply> pair. Runs in a goroutine to keep
-// it off the request path; week 9 replaces this with a Redis-backed queue.
-func (s *Service) updateCache(_ string, vec []float64, reply string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func (s *Service) runCacheWorker(ctx context.Context) {
+	s.queue.Run(ctx, s.handleCacheUpdateJob)
+}
+
+func (s *Service) handleCacheUpdateJob(ctx context.Context, job cachequeue.Job) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	return s.updateCache(ctx, job.Prompt, job.Vector, job.Reply)
+}
+
+// updateCache stores a new <vector, reply> pair from the Redis Streams worker.
+func (s *Service) updateCache(ctx context.Context, prompt string, vec []float64, reply string) error {
 	id, err := s.vstore.Upsert(ctx, vec)
 	if err != nil {
-		return
+		return err
 	}
-	_ = s.store.Save(id, reply)
-	// TODO(week 9): enforce capacity via the policy manager (evict on full).
+	if err := s.store.Save(persistence.Entry{
+		ID:        id,
+		Prompt:    prompt,
+		Reply:     reply,
+		Vector:    vec,
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		_ = s.vstore.Delete(ctx, id)
+		return err
+	}
+	s.policy.OnInsert(id)
+	return s.enforceCapacity(ctx)
+}
+
+// rebuildFromStore restores the RAM-only vector index from durable cache
+// entries and rebuilds policy-owned metadata after a restart.
+func (s *Service) rebuildFromStore(ctx context.Context) error {
+	entries, err := s.store.List()
+	if err != nil {
+		return fmt.Errorf("list cache entries for rebuild: %w", err)
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].CreatedAt.Before(entries[j].CreatedAt)
+	})
+
+	rebuildEntries := make([]vectorstore.RebuildEntry, 0, len(entries))
+	for _, entry := range entries {
+		rebuildEntries = append(rebuildEntries, vectorstore.RebuildEntry{
+			ID:     entry.ID,
+			Vector: entry.Vector,
+		})
+		s.policy.OnInsert(entry.ID)
+	}
+
+	if err := s.rebuildVectorStoreWithRetry(ctx, rebuildEntries); err != nil {
+		return fmt.Errorf("rebuild vector store from cache: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) rebuildVectorStoreWithRetry(ctx context.Context, entries []vectorstore.RebuildEntry) error {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	var lastErr error
+	for {
+		if _, err := s.vstore.Rebuild(ctx, entries); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				return lastErr
+			}
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// enforceCapacity keeps the durable cache at or below CACHE_CAPACITY.
+//
+// The orchestrator coordinates eviction, but the active policy owns victim
+// selection. This keeps persistence entries policy-agnostic while still making
+// capacity enforcement pluggable.
+func (s *Service) enforceCapacity(ctx context.Context) error {
+	if s.cfg.Capacity <= 0 {
+		return nil
+	}
+
+	for {
+		size, err := s.store.Size()
+		if err != nil {
+			return err
+		}
+		if size <= s.cfg.Capacity {
+			return nil
+		}
+
+		victimID, ok := s.policy.Victim()
+		if !ok {
+			return fmt.Errorf("cache size %d exceeds capacity %d, but policy %q has no victim", size, s.cfg.Capacity, s.policy.Current())
+		}
+
+		if err := s.store.Delete(victimID); err != nil {
+			return err
+		}
+		if err := s.vstore.Delete(ctx, victimID); err != nil {
+			return err
+		}
+		s.policy.OnDelete(victimID)
+	}
 }
 
 type statsResponse struct {
@@ -150,7 +278,7 @@ func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
 	if total > 0 {
 		rate = float64(hits) / float64(total)
 	}
-	size, _ := s.vstore.Size(r.Context())
+	size, _ := s.store.Size()
 
 	writeJSON(w, statsResponse{
 		Hits:    hits,
@@ -167,6 +295,7 @@ func (s *Service) handleFlush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.store.Flush()
+	s.policy.Flush()
 	s.mu.Lock()
 	s.hits, s.misses = 0, 0
 	s.mu.Unlock()
@@ -190,8 +319,33 @@ func (s *Service) handlePolicy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "ok", "policy": s.policy.Current()})
 }
 
-func (s *Service) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, map[string]string{"status": "ok"})
+func (s *Service) handleHealth(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	checks := map[string]string{
+		"embedding":   "ok",
+		"vectorstore": "ok",
+		"redis":       "ok",
+	}
+	status := "ok"
+	if err := s.embed.Health(ctx); err != nil {
+		checks["embedding"] = err.Error()
+		status = "degraded"
+	}
+	if err := s.vstore.Health(ctx); err != nil {
+		checks["vectorstore"] = err.Error()
+		status = "degraded"
+	}
+	if err := s.store.Health(); err != nil {
+		checks["redis"] = err.Error()
+		status = "degraded"
+	}
+
+	if status != "ok" {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	writeJSON(w, map[string]any{"status": status, "checks": checks})
 }
 
 func (s *Service) recordHit()  { s.mu.Lock(); s.hits++; s.mu.Unlock() }

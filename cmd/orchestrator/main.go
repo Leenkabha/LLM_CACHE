@@ -11,10 +11,13 @@ import (
 
 func main() {
 	cfg := config.Load()
-	svc := orchestrator.New(cfg)
+	svc, err := orchestrator.New(cfg)
+	if err != nil {
+		log.Fatalf("create orchestrator: %v", err)
+	}
 
-	log.Printf("orchestrator listening on %s (llm_mode=%s, threshold=%.3f, policy=%s)",
-		cfg.Addr, cfg.LLMMode, cfg.Threshold, cfg.Policy)
+	log.Printf("orchestrator listening on %s (llm_mode=%s, threshold=%.3f, policy=%s, redis=%s)",
+		cfg.Addr, cfg.LLMMode, cfg.Threshold, cfg.Policy, cfg.RedisAddr)
 	if err := http.ListenAndServe(cfg.Addr, svc.Routes()); err != nil {
 		log.Fatalf("server stopped: %v", err)
 	}

@@ -57,3 +57,19 @@ func (c *Client) Embed(ctx context.Context, text string) ([]float64, error) {
 	}
 	return out.Vector, nil
 }
+
+func (c *Client) Health(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("embedding service unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("embedding service returned %d", resp.StatusCode)
+	}
+	return nil
+}

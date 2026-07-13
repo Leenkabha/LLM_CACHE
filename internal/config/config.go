@@ -10,7 +10,7 @@ type Config struct {
 	Addr           string  // address the orchestrator HTTP server listens on
 	EmbeddingURL   string  // base URL of the embedding service
 	VectorStoreURL string  // base URL of the vector-store service
-	RedisAddr      string  // host:port of Redis (used once persistence is wired)
+	RedisAddr      string  // host:port of Redis persistence
 	Threshold      float64 // max distance for a cache hit
 	Capacity       int     // max number of cached entries
 	Policy         string  // eviction policy: "lru" or "lfu"
