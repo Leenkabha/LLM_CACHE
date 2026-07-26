@@ -2,15 +2,24 @@ package policy
 
 import "testing"
 
-func TestManagerDefaultsInvalidPolicyToLRU(t *testing.T) {
-	manager := New("unknown")
-	if got := manager.Current(); got != "lru" {
-		t.Fatalf("Current() = %q, want lru", got)
+// mustNew builds a Manager for tests, failing fast if the policy name is invalid.
+func mustNew(t *testing.T, name string) *Manager {
+	t.Helper()
+	manager, err := NewManager(name)
+	if err != nil {
+		t.Fatalf("NewManager(%q) error = %v", name, err)
+	}
+	return manager
+}
+
+func TestNewRejectsInvalidPolicy(t *testing.T) {
+	if _, err := NewManager("unknown"); err == nil {
+		t.Fatal("NewManager(\"unknown\") returned nil error, want configuration error")
 	}
 }
 
 func TestManagerSetRejectsRuntimeSwitch(t *testing.T) {
-	manager := New("lru")
+	manager := mustNew(t, "lru")
 
 	if err := manager.Set("lru"); err != nil {
 		t.Fatalf("Set() with current policy error = %v", err)
@@ -25,14 +34,14 @@ func TestManagerSetRejectsRuntimeSwitch(t *testing.T) {
 }
 
 func TestManagerSetRejectsInvalidPolicy(t *testing.T) {
-	manager := New("lru")
+	manager := mustNew(t, "lru")
 	if err := manager.Set("random"); err == nil {
 		t.Fatal("Set() with invalid policy returned nil, want error")
 	}
 }
 
 func TestManagerLRUTracksRecency(t *testing.T) {
-	manager := New("lru")
+	manager := mustNew(t, "lru")
 
 	manager.OnInsert("entry-1")
 	manager.OnInsert("entry-2")
@@ -60,7 +69,7 @@ func TestManagerLRUTracksRecency(t *testing.T) {
 }
 
 func TestManagerLFUTracksFrequency(t *testing.T) {
-	manager := New("lfu")
+	manager := mustNew(t, "lfu")
 
 	manager.OnInsert("entry-1")
 	manager.OnInsert("entry-2")
@@ -80,7 +89,7 @@ func TestManagerLFUTracksFrequency(t *testing.T) {
 }
 
 func TestManagerLFUTieBreaksByOldestInsert(t *testing.T) {
-	manager := New("lfu")
+	manager := mustNew(t, "lfu")
 
 	manager.OnInsert("entry-1")
 	manager.OnInsert("entry-2")

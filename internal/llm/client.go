@@ -11,34 +11,75 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/leenkabha/llm_cache/internal/config"
+	"github.com/leenkabha/llm_cache/internal/plugin"
 )
 
 const openAIResponsesURL = "https://api.openai.com/v1/responses"
 const geminiAPIBase = "https://generativelanguage.googleapis.com/v1beta/models"
 
 // Backend is the contract the orchestrator depends on for completions.
+//
+// This is the pluggable seam: the orchestrator holds a Backend, so the concrete
+// LLM provider behind it is interchangeable.
 type Backend interface {
 	Complete(ctx context.Context, prompt string) (string, error)
 }
 
-// New returns a Backend based on mode: "stub" (default), "openai", or "gemini".
-func New(mode, openAIKey, openAIModel, geminiKey, geminiModel string) Backend {
-	switch mode {
-	case "openai":
-		return &openAIBackend{
-			apiKey: openAIKey,
-			model:  openAIModel,
-			http:   &http.Client{Timeout: 30 * time.Second},
-		}
-	case "gemini":
-		return &geminiBackend{
-			apiKey: geminiKey,
-			model:  geminiModel,
-			http:   &http.Client{Timeout: 30 * time.Second},
-		}
-	default:
-		return &stubBackend{}
+// Mode names the built-in LLM backends selectable via configuration.
+const (
+	// ModeStub returns canned replies with no network access (default).
+	ModeStub = "stub"
+	// ModeOpenAI calls the OpenAI Responses API.
+	ModeOpenAI = "openai"
+	// ModeGemini calls the Google Generative Language (Gemini) API.
+	ModeGemini = "gemini"
+)
+
+// registry holds every LLM backend, keyed by the name used in LLM_MODE.
+var registry = plugin.NewRegistry[Backend]("llm mode")
+
+// Register makes an LLM backend available under name.
+//
+// Call it from an init() in your adapter file. Because adapters live in package
+// llm, adding the file is enough to register the backend -- no existing file,
+// and in particular not the orchestrator, needs to change. Then set
+// LLM_MODE=<name> to select it.
+func Register(name string, factory plugin.Factory[Backend]) {
+	registry.Register(name, factory)
+}
+
+// New builds the Backend selected by cfg.LLMMode from the registry.
+func New(cfg config.Config) (Backend, error) {
+	name := cfg.LLMMode
+	if name == "" {
+		name = ModeStub
 	}
+	return registry.Build(name, cfg)
+}
+
+// The built-in backends register themselves. New adapters follow the same shape
+// in their own files -- this init() is not an extension point, just where the
+// defaults live.
+func init() {
+	Register(ModeStub, func(config.Config) (Backend, error) {
+		return &stubBackend{}, nil
+	})
+	Register(ModeOpenAI, func(cfg config.Config) (Backend, error) {
+		return &openAIBackend{
+			apiKey: cfg.OpenAIKey,
+			model:  cfg.OpenAIModel,
+			http:   &http.Client{Timeout: 30 * time.Second},
+		}, nil
+	})
+	Register(ModeGemini, func(cfg config.Config) (Backend, error) {
+		return &geminiBackend{
+			apiKey: cfg.GeminiKey,
+			model:  cfg.GeminiModel,
+			http:   &http.Client{Timeout: 30 * time.Second},
+		}, nil
+	})
 }
 
 // stubBackend returns a canned reply so the skeleton runs with no network

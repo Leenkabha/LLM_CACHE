@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/leenkabha/llm_cache/internal/config"
+	"github.com/leenkabha/llm_cache/internal/plugin"
 )
 
 const (
@@ -24,6 +27,51 @@ type Job struct {
 	Prompt string
 	Reply  string
 	Vector []float64
+}
+
+// Queue is the async cache-update queue the orchestrator depends on.
+//
+// This is the pluggable seam: the orchestrator holds a Queue, so the durable
+// transport behind it (Redis Streams today) is interchangeable.
+type Queue interface {
+	// Enqueue appends a cache-update job for asynchronous processing.
+	Enqueue(ctx context.Context, job Job) error
+	// Run consumes jobs until ctx is canceled, invoking handler for each.
+	Run(ctx context.Context, handler func(context.Context, Job) error)
+}
+
+// Backend names the built-in queue adapters selectable via configuration.
+const (
+	// BackendRedis uses Redis Streams as the durable transport (default).
+	BackendRedis = "redis"
+)
+
+// registry holds every queue adapter, keyed by the name used in QUEUE_BACKEND.
+var registry = plugin.NewRegistry[Queue]("cache-update queue backend")
+
+// Register makes a queue adapter available under name.
+//
+// Call it from an init() in your adapter file. Because adapters live in package
+// cachequeue, adding the file is enough -- no existing file changes. Then set
+// QUEUE_BACKEND=<name> to select it.
+func Register(name string, factory plugin.Factory[Queue]) {
+	registry.Register(name, factory)
+}
+
+// New builds the Queue selected by cfg.QueueBackend from the registry.
+func New(cfg config.Config) (Queue, error) {
+	name := cfg.QueueBackend
+	if name == "" {
+		name = BackendRedis
+	}
+	return registry.Build(name, cfg)
+}
+
+// The built-in Redis Streams adapter registers itself.
+func init() {
+	Register(BackendRedis, func(cfg config.Config) (Queue, error) {
+		return NewRedisStreamQueue(cfg.RedisAddr)
+	})
 }
 
 // RedisStreamQueue stores cache-update jobs in a Redis Stream.

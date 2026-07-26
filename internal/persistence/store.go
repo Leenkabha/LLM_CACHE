@@ -6,7 +6,50 @@ package persistence
 import (
 	"sync"
 	"time"
+
+	"github.com/leenkabha/llm_cache/internal/config"
+	"github.com/leenkabha/llm_cache/internal/plugin"
 )
+
+// Backend names the built-in persistence adapters selectable via configuration.
+const (
+	// BackendRedis persists durably in Redis (default, HLD source of truth).
+	BackendRedis = "redis"
+	// BackendMemory keeps entries in process memory (tests / local fallback).
+	BackendMemory = "memory"
+)
+
+// registry holds every persistence adapter, keyed by the name used in
+// PERSISTENCE_BACKEND.
+var registry = plugin.NewRegistry[Store]("persistence backend")
+
+// Register makes a persistence adapter available under name.
+//
+// Call it from an init() in your adapter file. Because adapters live in package
+// persistence, adding the file is enough -- no existing file changes. Then set
+// PERSISTENCE_BACKEND=<name> to select it.
+func Register(name string, factory plugin.Factory[Store]) {
+	registry.Register(name, factory)
+}
+
+// New builds the Store selected by cfg.PersistenceBackend from the registry.
+func New(cfg config.Config) (Store, error) {
+	name := cfg.PersistenceBackend
+	if name == "" {
+		name = BackendRedis
+	}
+	return registry.Build(name, cfg)
+}
+
+// The built-in stores register themselves.
+func init() {
+	Register(BackendRedis, func(cfg config.Config) (Store, error) {
+		return NewRedisStore(cfg.RedisAddr)
+	})
+	Register(BackendMemory, func(config.Config) (Store, error) {
+		return NewMemoryStore(), nil
+	})
+}
 
 // Entry is the policy-agnostic cache record.
 //

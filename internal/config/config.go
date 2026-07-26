@@ -15,6 +15,15 @@ type Config struct {
 	Capacity       int     // max number of cached entries
 	Policy         string  // eviction policy: "lru" or "lfu"
 
+	// Backend selectors choose which adapter implements each pluggable seam.
+	// Each maps to a factory in the matching internal package, so a new
+	// implementation is opt-in via configuration without any code changes to
+	// the orchestrator. Defaults reproduce the demo stack.
+	EmbeddingBackend   string // embedder adapter: "http"
+	VectorStoreBackend string // vector-store adapter: "http"
+	PersistenceBackend string // persistence adapter: "redis" or "memory"
+	QueueBackend       string // cache-update queue adapter: "redis"
+
 	LLMMode     string // "stub", "openai", or "gemini"
 	OpenAIKey   string
 	OpenAIModel string
@@ -43,10 +52,16 @@ func Load() Config {
 		Threshold:      threshold,
 		Capacity:       capacity,
 		Policy:         getenv("CACHE_POLICY", "lru"),
-		LLMMode:        getenv("LLM_MODE", "stub"),
-		OpenAIKey:      getenv("OPENAI_API_KEY", ""),
-		OpenAIModel:    getenv("OPENAI_MODEL", "gpt-4o-mini"),
-		GeminiKey:      getenv("GEMINI_API_KEY", ""),
-		GeminiModel:    getenv("GEMINI_MODEL", "gemini-flash-latest"),
+
+		EmbeddingBackend:   getenv("EMBEDDING_BACKEND", "http"),
+		VectorStoreBackend: getenv("VECTORSTORE_BACKEND", "http"),
+		PersistenceBackend: getenv("PERSISTENCE_BACKEND", "redis"),
+		QueueBackend:       getenv("QUEUE_BACKEND", "redis"),
+
+		LLMMode:     getenv("LLM_MODE", "stub"),
+		OpenAIKey:   getenv("OPENAI_API_KEY", ""),
+		OpenAIModel: getenv("OPENAI_MODEL", "gpt-4o-mini"),
+		GeminiKey:   getenv("GEMINI_API_KEY", ""),
+		GeminiModel: getenv("GEMINI_MODEL", "gemini-flash-latest"),
 	}
 }

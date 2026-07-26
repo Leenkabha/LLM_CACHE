@@ -23,11 +23,11 @@ import (
 
 type Service struct {
 	cfg    config.Config
-	embed  *embedder.Client
-	vstore *vectorstore.Client
+	embed  embedder.Embedder
+	vstore vectorstore.VectorStore
 	llm    llm.Backend
 	store  persistence.Store
-	queue  *cachequeue.RedisStreamQueue
+	queue  cachequeue.Queue
 	policy *policy.Manager
 
 	mu     sync.Mutex
@@ -35,24 +35,83 @@ type Service struct {
 	misses int
 }
 
-func New(cfg config.Config) (*Service, error) {
-	store, err := persistence.NewRedisStore(cfg.RedisAddr)
+// Dependencies bundles the pluggable adapters the orchestrator runs on.
+//
+// Every field is an interface (a "port"), so the orchestrator never names a
+// concrete implementation. Build the default set from config with
+// BuildDependencies, or construct the fields directly -- with alternative
+// backends or test doubles -- and pass them to NewWithDependencies.
+type Dependencies struct {
+	Embedder    embedder.Embedder
+	VectorStore vectorstore.VectorStore
+	LLM         llm.Backend
+	Store       persistence.Store
+	Queue       cachequeue.Queue
+	Policy      *policy.Manager
+}
+
+// BuildDependencies assembles the default adapter set selected by cfg.
+//
+// This is the single place configuration is mapped to concrete implementations:
+// each seam is resolved through its package factory, so adding or swapping a
+// backend never touches the orchestrator's request logic.
+func BuildDependencies(cfg config.Config) (Dependencies, error) {
+	embed, err := embedder.New(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("connect persistence store at %s: %w", cfg.RedisAddr, err)
+		return Dependencies{}, fmt.Errorf("build embedder: %w", err)
 	}
-	queue, err := cachequeue.NewRedisStreamQueue(cfg.RedisAddr)
+	vstore, err := vectorstore.New(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("connect cache-update queue at %s: %w", cfg.RedisAddr, err)
+		return Dependencies{}, fmt.Errorf("build vector store: %w", err)
+	}
+	backend, err := llm.New(cfg)
+	if err != nil {
+		return Dependencies{}, fmt.Errorf("build llm backend: %w", err)
+	}
+	store, err := persistence.New(cfg)
+	if err != nil {
+		return Dependencies{}, fmt.Errorf("build persistence store: %w", err)
+	}
+	queue, err := cachequeue.New(cfg)
+	if err != nil {
+		return Dependencies{}, fmt.Errorf("build cache-update queue: %w", err)
+	}
+	pol, err := policy.New(cfg)
+	if err != nil {
+		return Dependencies{}, fmt.Errorf("build policy: %w", err)
 	}
 
+	return Dependencies{
+		Embedder:    embed,
+		VectorStore: vstore,
+		LLM:         backend,
+		Store:       store,
+		Queue:       queue,
+		Policy:      pol,
+	}, nil
+}
+
+// New builds the orchestrator with the default config-selected adapters.
+func New(cfg config.Config) (*Service, error) {
+	deps, err := BuildDependencies(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return NewWithDependencies(cfg, deps)
+}
+
+// NewWithDependencies builds the orchestrator from an explicit adapter set,
+// then restores state and starts the async cache worker. New is the
+// config-driven entry point; this exists for tests and custom wiring.
+func NewWithDependencies(cfg config.Config, deps Dependencies) (*Service, error) {
 	svc := &Service{
 		cfg:    cfg,
-		embed:  embedder.New(cfg.EmbeddingURL),
-		vstore: vectorstore.New(cfg.VectorStoreURL),
-		llm:    llm.New(cfg.LLMMode, cfg.OpenAIKey, cfg.OpenAIModel, cfg.GeminiKey, cfg.GeminiModel),
-		store:  store,
-		queue:  queue,
-		policy: policy.New(cfg.Policy),
+		embed:  deps.Embedder,
+		vstore: deps.VectorStore,
+		llm:    deps.LLM,
+		store:  deps.Store,
+		queue:  deps.Queue,
+		policy: deps.Policy,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

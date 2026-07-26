@@ -5,11 +5,20 @@ services:
     build: ./embedding_service
     ports:
       - "8001:8001"
+    environment:
+      # Pluggable embedding model inside the service (see embedding_service/app/models.py).
+      EMBEDDING_MODEL_BACKEND: "${EMBEDDING_MODEL_BACKEND:-sentence-transformers}"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-all-MiniLM-L6-v2}"
 
   vectorstore:
     build: ./vector_store_service
     ports:
       - "8002:8002"
+    environment:
+      # Pluggable index engine + similarity metric (see vector_store_service/app/).
+      VECTOR_INDEX_BACKEND: "${VECTOR_INDEX_BACKEND:-faiss}"
+      SIMILARITY_METRIC: "${SIMILARITY_METRIC:-cosine}"
+      VECTOR_DIM: "${VECTOR_DIM:-384}"
 
   redis:
     image: redis:7-alpine
@@ -30,6 +39,11 @@ services:
       SIMILARITY_THRESHOLD: "${SIMILARITY_THRESHOLD:-0.25}"
       CACHE_CAPACITY: "${CACHE_CAPACITY:-1000}"
       CACHE_POLICY: "${CACHE_POLICY:-lru}"
+      # Pluggable adapters the orchestrator selects for each seam.
+      EMBEDDING_BACKEND: "${EMBEDDING_BACKEND:-http}"
+      VECTORSTORE_BACKEND: "${VECTORSTORE_BACKEND:-http}"
+      PERSISTENCE_BACKEND: "${PERSISTENCE_BACKEND:-redis}"
+      QUEUE_BACKEND: "${QUEUE_BACKEND:-redis}"
       LLM_MODE: "${LLM_MODE:-stub}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       OPENAI_MODEL: "${OPENAI_MODEL:-gpt-4o-mini}"

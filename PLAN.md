@@ -90,6 +90,21 @@ embedding model, vector DB, and LLM provider are all replaceable.
 5. **Metrics** stack — candidate Prometheus + Grafana (secondary feature).
 6. **Web chat UI** — final submission or follow-up extension?
 
+## Session log
+
+- **2026-07-26 — Pluggable-seam refactor merged & verified.** Introduced a
+  generic `internal/plugin.Registry[T]` in Go and an equivalent
+  `app/plugins/` auto-discovery mechanism in each Python service, so every
+  seam (embedder, vector store, LLM, persistence, queue, eviction policy on
+  the Go side; embedding model, vector index, similarity metric on the
+  Python side) self-registers via `init()` / `@register(...)` — adding a new
+  backend now means dropping in one file, no existing file changes. Verified
+  end-to-end after merging: `go build`/`vet`/`test`/`test -race` all clean,
+  all four Docker images build, and a full `docker-compose` run confirmed the
+  real miss → LLM → async cache-write → hit cycle, `/stats`, `/health`,
+  `/policy`, `/flush`, and FAISS-index rebuild-from-Redis after an
+  orchestrator restart all behave as documented. No bugs found.
+
 ## Division of work (3-person team)
 
 Roughly along service boundaries, which is the point of the architecture:

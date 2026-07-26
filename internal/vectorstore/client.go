@@ -1,7 +1,11 @@
-// Package vectorstore is the orchestrator's client for the vector-store service.
-// The backend is a FAISS index (see vector_store_service/app/main.py); this
-// client just speaks the REST contract, so it never needed to change when
-// the backend swapped from brute-force to FAISS.
+// Package vectorstore is the orchestrator's port to the vector-store service.
+//
+// The orchestrator depends only on the VectorStore interface. The demo ships
+// one adapter -- an HTTP client that speaks the vector-store service's REST
+// contract (a FAISS index today) -- but any other implementation (a different
+// vector database, an in-process index, a test double) can be plugged in
+// without touching the orchestrator. Selecting an adapter is the factory's job
+// (see New).
 package vectorstore
 
 import (
@@ -11,24 +15,98 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/leenkabha/llm_cache/internal/config"
+	"github.com/leenkabha/llm_cache/internal/plugin"
 )
-
-type Client struct {
-	baseURL string
-	http    *http.Client
-}
-
-func New(baseURL string) *Client {
-	return &Client{
-		baseURL: baseURL,
-		http:    &http.Client{Timeout: 10 * time.Second},
-	}
-}
 
 // Match is the nearest stored vector for a query.
 type Match struct {
 	ID       string  `json:"id"`
 	Distance float64 `json:"distance"`
+}
+
+// RebuildEntry pairs a previously-saved reply's id with its vector, for
+// restoring the index after a restart. Mirrors RebuildEntry in
+// vector_store_service/app/main.py exactly -- field names and JSON tags
+// must match that contract.
+type RebuildEntry struct {
+	ID     string    `json:"id"`
+	Vector []float64 `json:"vector"`
+}
+
+// VectorStore stores embedding vectors and finds the nearest one under a
+// configurable similarity threshold.
+//
+// This is the pluggable seam: the orchestrator holds a VectorStore, so the
+// concrete vector database behind it is interchangeable.
+type VectorStore interface {
+	// Search returns the nearest entry within threshold, or nil on a miss.
+	Search(ctx context.Context, vec []float64, topK int, threshold float64) (*Match, error)
+	// Upsert stores a vector and returns its generated id.
+	Upsert(ctx context.Context, vec []float64) (string, error)
+	// Delete removes a vector by id (used by eviction).
+	Delete(ctx context.Context, id string) error
+	// Size returns the number of stored vectors.
+	Size(ctx context.Context) (int, error)
+	// Flush clears all stored vectors.
+	Flush(ctx context.Context) error
+	// Rebuild repopulates the index from durably-stored entries after a restart.
+	Rebuild(ctx context.Context, entries []RebuildEntry) (int, error)
+	// Health reports whether the underlying vector store is reachable.
+	Health(ctx context.Context) error
+}
+
+// Backend names the built-in vector-store adapters selectable via configuration.
+const (
+	// BackendHTTP talks to a remote vector-store service over REST (default).
+	BackendHTTP = "http"
+)
+
+// registry holds every vector-store adapter, keyed by the name used in
+// VECTORSTORE_BACKEND.
+var registry = plugin.NewRegistry[VectorStore]("vector store backend")
+
+// Register makes a vector-store adapter available under name.
+//
+// Call it from an init() in your adapter file. Because adapters live in package
+// vectorstore, adding the file is enough -- no existing file changes. Then set
+// VECTORSTORE_BACKEND=<name> to select it.
+func Register(name string, factory plugin.Factory[VectorStore]) {
+	registry.Register(name, factory)
+}
+
+// New builds the VectorStore selected by cfg.VectorStoreBackend from the registry.
+func New(cfg config.Config) (VectorStore, error) {
+	name := cfg.VectorStoreBackend
+	if name == "" {
+		name = BackendHTTP
+	}
+	return registry.Build(name, cfg)
+}
+
+// The built-in HTTP adapter registers itself.
+func init() {
+	Register(BackendHTTP, func(cfg config.Config) (VectorStore, error) {
+		return NewHTTP(cfg.VectorStoreURL), nil
+	})
+}
+
+// httpVectorStore is the HTTP adapter for a remote vector-store service. It
+// speaks the REST contract only, so the backend (brute-force, FAISS, or another
+// vector DB) is interchangeable behind it.
+type httpVectorStore struct {
+	baseURL string
+	http    *http.Client
+}
+
+// NewHTTP builds the HTTP vector-store adapter directly. Prefer New for
+// config-driven selection; this is exported for tests and explicit wiring.
+func NewHTTP(baseURL string) VectorStore {
+	return &httpVectorStore{
+		baseURL: baseURL,
+		http:    &http.Client{Timeout: 10 * time.Second},
+	}
 }
 
 type searchRequest struct {
@@ -43,8 +121,7 @@ type searchResponse struct {
 	Dist float64 `json:"distance"`
 }
 
-// Search returns the nearest entry within threshold, or nil on a miss.
-func (c *Client) Search(ctx context.Context, vec []float64, topK int, threshold float64) (*Match, error) {
+func (c *httpVectorStore) Search(ctx context.Context, vec []float64, topK int, threshold float64) (*Match, error) {
 	body, _ := json.Marshal(searchRequest{Vector: vec, TopK: topK, Threshold: threshold})
 	var out searchResponse
 	if err := c.post(ctx, "/search", body, &out); err != nil {
@@ -64,8 +141,7 @@ type upsertResponse struct {
 	ID string `json:"id"`
 }
 
-// Upsert stores a vector and returns its generated id.
-func (c *Client) Upsert(ctx context.Context, vec []float64) (string, error) {
+func (c *httpVectorStore) Upsert(ctx context.Context, vec []float64) (string, error) {
 	body, _ := json.Marshal(upsertRequest{Vector: vec})
 	var out upsertResponse
 	if err := c.post(ctx, "/upsert", body, &out); err != nil {
@@ -76,17 +152,10 @@ func (c *Client) Upsert(ctx context.Context, vec []float64) (string, error) {
 
 // Delete removes a vector by id (used by eviction).
 //
-// FIX: this previously ignored the response status code entirely, so a
-// 404 (or any other error) from the vector store was silently treated as
-// a success. That's dangerous specifically because eviction relies on
-// Delete() actually working -- if it silently "succeeds" without really
-// removing the vector, the vector store and Redis fall out of sync (the
-// same failure mode IndexIDMap was introduced to prevent on the FAISS
-// side -- see vector_store_service/app/main.py). Now it checks the
-// status code the same way every other method here already does via
-// post(), and reports a proper error if the deletion didn't actually
-// happen.
-func (c *Client) Delete(ctx context.Context, id string) error {
+// It checks the response status code: a 404 (or any non-200) means the
+// deletion did not actually happen, and eviction relies on Delete truly
+// removing the vector -- otherwise the vector store and Redis fall out of sync.
+func (c *httpVectorStore) Delete(ctx context.Context, id string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/entries/"+id, nil)
 	if err != nil {
 		return err
@@ -106,8 +175,7 @@ type sizeResponse struct {
 	Size int `json:"size"`
 }
 
-// Size returns the number of stored vectors.
-func (c *Client) Size(ctx context.Context) (int, error) {
+func (c *httpVectorStore) Size(ctx context.Context) (int, error) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/size", nil)
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -121,12 +189,11 @@ func (c *Client) Size(ctx context.Context) (int, error) {
 	return out.Size, nil
 }
 
-// Flush clears all stored vectors.
-func (c *Client) Flush(ctx context.Context) error {
+func (c *httpVectorStore) Flush(ctx context.Context) error {
 	return c.post(ctx, "/flush", []byte("{}"), &struct{}{})
 }
 
-func (c *Client) Health(ctx context.Context) error {
+func (c *httpVectorStore) Health(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
 	if err != nil {
 		return err
@@ -142,15 +209,6 @@ func (c *Client) Health(ctx context.Context) error {
 	return nil
 }
 
-// RebuildEntry pairs a previously-saved reply's id with its vector, for
-// restoring the FAISS index after a restart. Mirrors RebuildEntry in
-// vector_store_service/app/main.py exactly -- field names and JSON tags
-// must match that contract.
-type RebuildEntry struct {
-	ID     string    `json:"id"`
-	Vector []float64 `json:"vector"`
-}
-
 type rebuildRequest struct {
 	Entries []RebuildEntry `json:"entries"`
 }
@@ -159,10 +217,10 @@ type rebuildResponse struct {
 	Restored int `json:"restored"`
 }
 
-// Rebuild repopulates the RAM-only FAISS index from durably-stored entries.
-// The vector store has no memory of its own past once its container restarts,
-// so the orchestrator replays the surviving Redis entries on startup.
-func (c *Client) Rebuild(ctx context.Context, entries []RebuildEntry) (int, error) {
+// Rebuild repopulates the RAM-only index from durably-stored entries. The
+// vector store has no memory of its own past once its container restarts, so
+// the orchestrator replays the surviving Redis entries on startup.
+func (c *httpVectorStore) Rebuild(ctx context.Context, entries []RebuildEntry) (int, error) {
 	body, _ := json.Marshal(rebuildRequest{Entries: entries})
 	var out rebuildResponse
 	if err := c.post(ctx, "/rebuild", body, &out); err != nil {
@@ -171,7 +229,7 @@ func (c *Client) Rebuild(ctx context.Context, entries []RebuildEntry) (int, erro
 	return out.Restored, nil
 }
 
-func (c *Client) post(ctx context.Context, path string, body []byte, out any) error {
+func (c *httpVectorStore) post(ctx context.Context, path string, body []byte, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return err

@@ -254,16 +254,58 @@ specific policy.
 
 ---
 
+## Pluggability — the six replaceable seams
+
+Every part of the system that the spec calls "interchangeable" is a real
+interface (a *port*) with implementations (*adapters*) that **register
+themselves**. **Adding a new backend means dropping in one new file that
+registers itself — you edit no existing file, not the orchestrator, not a
+factory.** The Go orchestrator depends only on interfaces, so it is also
+unit-testable with in-memory doubles via `orchestrator.NewWithDependencies`.
+
+| Seam | Interface (port) | Adapters today | Selector |
+|------|------------------|----------------|----------|
+| Embedder (orchestrator → service) | `embedder.Embedder` | `http` | `EMBEDDING_BACKEND` |
+| Vector store (orchestrator → service) | `vectorstore.VectorStore` | `http` | `VECTORSTORE_BACKEND` |
+| LLM backend | `llm.Backend` | `stub`, `openai`, `gemini` | `LLM_MODE` |
+| Persistence | `persistence.Store` | `redis`, `memory` | `PERSISTENCE_BACKEND` |
+| Async queue | `cachequeue.Queue` | `redis` | `QUEUE_BACKEND` |
+| Eviction policy | `policy.EvictionPolicy` | `lru`, `lfu` | `CACHE_POLICY` |
+| Embedding model *(inside embedding service)* | `EmbeddingModel` | `sentence-transformers` | `EMBEDDING_MODEL_BACKEND` |
+| Vector index *(inside vector-store service)* | `VectorIndex` | `faiss` | `VECTOR_INDEX_BACKEND` |
+| Similarity metric *(inside vector-store service)* | `SimilarityMetric` | `cosine`, `euclidean` | `SIMILARITY_METRIC` |
+
+> Note: `EMBEDDING_BACKEND`/`VECTORSTORE_BACKEND` select the **orchestrator's
+> client adapter**; the `*_MODEL_BACKEND` / `VECTOR_INDEX_BACKEND` variables
+> select the engine **inside** each Python service. They are deliberately
+> distinct names so the two containers never clash.
+
+**How self-registration works.** Each seam has a registry. Built-in adapters
+call `Register(...)` (Go, from an `init()`) or `@register(...)` (Python) so they
+add themselves at startup. To plug in your own:
+
+- **Go:** add a file to the seam's package (e.g. `internal/llm/`) with a type
+  implementing the interface and an `init()` that calls `llm.Register("name", …)`.
+  Because it's in the same package it's compiled and auto-registers — no imports,
+  no edits elsewhere. Then set the selector env var.
+- **Python:** drop a file into the service's `app/plugins/` directory that
+  subclasses the interface and calls `@register("name")`. It's auto-imported at
+  startup. Then set the selector env var.
+
+Unknown selector names **fail fast at startup** listing what's registered.
+
+---
+
 ## Team split
 
 | Member | Task | Files to work in |
 |--------|------|-----------------|
-| A | Real embedder (ML model) | `embedding_service/app/main.py`, `internal/embedder/client.go` |
-| B | Real vector store (FAISS) | `vector_store_service/app/main.py`, `internal/vectorstore/client.go` |
+| A | Real embedder (ML model) | `embedding_service/app/models.py`, `internal/embedder/client.go` |
+| B | Real vector store (FAISS) | `vector_store_service/app/index.py`, `vector_store_service/app/metrics.py`, `internal/vectorstore/client.go` |
 | C | Real LLM + Redis persistence/policies | `internal/llm/client.go`, `internal/persistence/`, `internal/policy/` |
 
-The main service flow lives in `internal/orchestrator/service.go`, so persistence
-and policy changes may need orchestrator integration.
+The main service flow lives in `internal/orchestrator/service.go`, which wires
+the adapters together in `BuildDependencies`.
 
 ---
 
@@ -287,23 +329,28 @@ LLM_CACHE/
 │   ├── orchestrator/main.go      # orchestrator entry point
 │   └── cli/main.go               # command-line client
 ├── internal/
-│   ├── orchestrator/service.go   # full request flow logic
-│   ├── config/config.go          # env var configuration
-│   ├── cachequeue/redis_stream.go # Redis Streams async cache-update queue
-│   ├── embedder/client.go        # HTTP client → embedding service
-│   ├── vectorstore/client.go     # HTTP client → vector store service
-│   ├── llm/client.go             # LLM backend (stub / openai)
-│   ├── persistence/store.go      # cache-entry storage interface + memory implementation
-│   ├── persistence/redis_store.go # Redis-backed cache-entry storage
-│   ├── policy/policy.go          # pluggable eviction policy manager
-│   ├── policy/lru.go             # LRU policy implementation
-│   └── policy/lfu.go             # LFU policy implementation
+│   ├── orchestrator/service.go   # request flow + BuildDependencies wiring
+│   ├── config/config.go          # env var configuration (+ backend selectors)
+│   ├── cachequeue/redis_stream.go # Queue interface + Redis Streams adapter + factory
+│   ├── embedder/client.go        # Embedder interface + HTTP adapter + factory
+│   ├── vectorstore/client.go     # VectorStore interface + HTTP adapter + factory
+│   ├── llm/client.go             # Backend interface + stub/openai/gemini + factory
+│   ├── persistence/store.go      # Store interface + memory adapter + factory
+│   ├── persistence/redis_store.go # Redis-backed Store adapter
+│   ├── policy/policy.go          # EvictionPolicy interface + Manager + factory
+│   ├── policy/lru.go             # LRU adapter
+│   └── policy/lfu.go             # LFU adapter
 ├── embedding_service/
-│   └── app/main.py               # FastAPI embedding service
+│   └── app/
+│       ├── main.py               # thin FastAPI layer
+│       └── models.py             # EmbeddingModel interface + adapter + factory
 ├── vector_store_service/
-│   └── app/main.py               # FastAPI vector store service
+│   └── app/
+│       ├── main.py               # thin FastAPI layer
+│       ├── index.py              # VectorIndex interface + FAISS adapter + factory
+│       └── metrics.py            # SimilarityMetric interface + cosine/euclidean
 ├── deploy/                       # Dockerfiles
 ├── docker-compose.yml            # runs all services together
-├── .env.example                  # config template
+├── .env.example                  # config template (all pluggable selectors)
 └── spec1.pdf / spec 2.pdf        # functional spec & HLD
 ```
