@@ -49,7 +49,7 @@ func New(cfg config.Config) (*Service, error) {
 		cfg:    cfg,
 		embed:  embedder.New(cfg.EmbeddingURL),
 		vstore: vectorstore.New(cfg.VectorStoreURL),
-		llm:    llm.New(cfg.LLMMode, cfg.OpenAIKey, cfg.OpenAIModel),
+		llm:    llm.New(cfg.LLMMode, cfg.OpenAIKey, cfg.OpenAIModel, cfg.GeminiKey, cfg.GeminiModel),
 		store:  store,
 		queue:  queue,
 		policy: policy.New(cfg.Policy),

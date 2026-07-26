@@ -14,19 +14,26 @@ import (
 )
 
 const openAIResponsesURL = "https://api.openai.com/v1/responses"
+const geminiAPIBase = "https://generativelanguage.googleapis.com/v1beta/models"
 
 // Backend is the contract the orchestrator depends on for completions.
 type Backend interface {
 	Complete(ctx context.Context, prompt string) (string, error)
 }
 
-// New returns a Backend based on mode: "stub" (default) or "openai".
-func New(mode, apiKey, model string) Backend {
+// New returns a Backend based on mode: "stub" (default), "openai", or "gemini".
+func New(mode, openAIKey, openAIModel, geminiKey, geminiModel string) Backend {
 	switch mode {
 	case "openai":
 		return &openAIBackend{
-			apiKey: apiKey,
-			model:  model,
+			apiKey: openAIKey,
+			model:  openAIModel,
+			http:   &http.Client{Timeout: 30 * time.Second},
+		}
+	case "gemini":
+		return &geminiBackend{
+			apiKey: geminiKey,
+			model:  geminiModel,
 			http:   &http.Client{Timeout: 30 * time.Second},
 		}
 	default:
@@ -131,4 +138,97 @@ func extractResponseText(resp responsesResponse) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+// geminiBackend calls the Google Generative Language API (Gemini), which
+// offers a free tier suitable for demos without OpenAI billing.
+type geminiBackend struct {
+	apiKey string
+	model  string
+	http   *http.Client
+}
+
+type geminiRequest struct {
+	Contents []geminiContent `json:"contents"`
+}
+
+type geminiContent struct {
+	Parts []geminiPart `json:"parts"`
+}
+
+type geminiPart struct {
+	Text string `json:"text"`
+}
+
+type geminiResponse struct {
+	Candidates []struct {
+		Content struct {
+			Parts []geminiPart `json:"parts"`
+		} `json:"content"`
+	} `json:"candidates"`
+}
+
+func (g *geminiBackend) Complete(ctx context.Context, prompt string) (string, error) {
+	if g.apiKey == "" {
+		return "", fmt.Errorf("GEMINI_API_KEY not set")
+	}
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		reply, err := g.completeOnce(ctx, prompt)
+		if err == nil {
+			return reply, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+	}
+	return "", lastErr
+}
+
+func (g *geminiBackend) completeOnce(ctx context.Context, prompt string) (string, error) {
+	body, err := json.Marshal(geminiRequest{Contents: []geminiContent{{Parts: []geminiPart{{Text: prompt}}}}})
+	if err != nil {
+		return "", err
+	}
+	url := fmt.Sprintf("%s/%s:generateContent?key=%s", geminiAPIBase, g.model, g.apiKey)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := g.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("gemini unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("gemini returned %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+
+	var out geminiResponse
+	if err := json.Unmarshal(data, &out); err != nil {
+		return "", err
+	}
+	if len(out.Candidates) == 0 {
+		return "", fmt.Errorf("gemini response did not contain text")
+	}
+	var parts []string
+	for _, p := range out.Candidates[0].Content.Parts {
+		if text := strings.TrimSpace(p.Text); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	reply := strings.Join(parts, "\n")
+	if reply == "" {
+		return "", fmt.Errorf("gemini response did not contain text")
+	}
+	return reply, nil
 }

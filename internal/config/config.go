@@ -15,9 +15,11 @@ type Config struct {
 	Capacity       int     // max number of cached entries
 	Policy         string  // eviction policy: "lru" or "lfu"
 
-	LLMMode     string // "stub" or "openai"
+	LLMMode     string // "stub", "openai", or "gemini"
 	OpenAIKey   string
 	OpenAIModel string
+	GeminiKey   string
+	GeminiModel string
 }
 
 func getenv(key, def string) string {
@@ -44,5 +46,7 @@ func Load() Config {
 		LLMMode:        getenv("LLM_MODE", "stub"),
 		OpenAIKey:      getenv("OPENAI_API_KEY", ""),
 		OpenAIModel:    getenv("OPENAI_MODEL", "gpt-4o-mini"),
+		GeminiKey:      getenv("GEMINI_API_KEY", ""),
+		GeminiModel:    getenv("GEMINI_MODEL", "gemini-flash-latest"),
 	}
 }
