@@ -137,6 +137,7 @@ func NewWithDependencies(cfg config.Config, deps Dependencies) (*Service, error)
 // Routes registers all orchestrator HTTP endpoints.
 func (s *Service) Routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", s.handleUI)
 	mux.HandleFunc("POST /query", s.handleQuery)
 	mux.HandleFunc("GET /stats", s.handleStats)
 	mux.HandleFunc("POST /flush", s.handleFlush)
@@ -434,24 +435,34 @@ func (s *Service) handlePolicy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "ok", "policy": s.policy.Current()})
 }
 
-func (s *Service) handleHealth(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-	defer cancel()
+// healthCheckTimeout bounds each dependency check independently. Checks run
+// sequentially and must not share one deadline: if they did, a slow or down
+// dependency checked first could exhaust the whole budget and make later,
+// perfectly healthy dependencies falsely report "context deadline exceeded".
+const healthCheckTimeout = 3 * time.Second
 
+func (s *Service) handleHealth(w http.ResponseWriter, r *http.Request) {
 	checks := map[string]string{
 		"embedding":   "ok",
 		"vectorstore": "ok",
 		"redis":       "ok",
 	}
 	status := "ok"
-	if err := s.embed.Health(ctx); err != nil {
+
+	embedCtx, cancel := context.WithTimeout(r.Context(), healthCheckTimeout)
+	defer cancel()
+	if err := s.embed.Health(embedCtx); err != nil {
 		checks["embedding"] = err.Error()
 		status = "degraded"
 	}
-	if err := s.vstore.Health(ctx); err != nil {
+
+	vstoreCtx, cancel := context.WithTimeout(r.Context(), healthCheckTimeout)
+	defer cancel()
+	if err := s.vstore.Health(vstoreCtx); err != nil {
 		checks["vectorstore"] = err.Error()
 		status = "degraded"
 	}
+
 	if err := s.store.Health(); err != nil {
 		checks["redis"] = err.Error()
 		status = "degraded"

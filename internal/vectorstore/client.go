@@ -184,9 +184,12 @@ func (c *httpVectorStore) Size(ctx context.Context) (int, error) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/size", nil)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("vector store unreachable: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("vector store returned %d", resp.StatusCode)
+	}
 	var out sizeResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return 0, err

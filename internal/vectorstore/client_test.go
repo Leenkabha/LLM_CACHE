@@ -57,3 +57,44 @@ func TestSearchRejectsInvalidK(t *testing.T) {
 		}
 	}
 }
+
+// Regression test: Size() must check the HTTP status code, the same bug
+// class previously fixed in Delete(). A non-200 response with a body that
+// happens to decode cleanly into sizeResponse (e.g. an empty JSON object)
+// must not be reported as a successful size of 0.
+func TestSizeHTTP(t *testing.T) {
+	for _, tc := range []struct {
+		name, body   string
+		status, want int
+		invalid      bool
+	}{
+		{"ok", `{"size":5}`, 200, 5, false},
+		{"error status with json-ish body", `{}`, 500, 0, true},
+		{"error status with error body", `{"detail":"not found"}`, 404, 0, true},
+		{"bad json", `{`, 200, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != "GET" || r.URL.Path != "/size" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			size, err := NewHTTP(server.URL).Size(context.Background())
+			if (err != nil) != tc.invalid {
+				t.Fatalf("error=%v, want invalid=%v", err, tc.invalid)
+			}
+			if !tc.invalid && size != tc.want {
+				t.Fatalf("size=%d, want %d", size, tc.want)
+			}
+		})
+	}
+}
+
+func TestSizeHTTPUnreachable(t *testing.T) {
+	if _, err := NewHTTP("http://127.0.0.1:1").Size(context.Background()); err == nil {
+		t.Fatal("expected error for unreachable vector store")
+	}
+}

@@ -27,11 +27,12 @@ type Config struct {
 	PersistenceBackend string // persistence adapter: "redis" or "memory"
 	QueueBackend       string // cache-update queue adapter: "redis"
 
-	LLMMode     string // registered LLM backend, e.g. "stub", "openai", "gemini", "example-http"
-	OpenAIKey   string
-	OpenAIModel string
-	GeminiKey   string
-	GeminiModel string
+	LLMMode         string // registered LLM backend, e.g. "stub", "openai", "gemini", "example-http"
+	LLMFallbackMode string // optional: registered LLM backend to fall back to if LLMMode fails; empty disables fallback
+	OpenAIKey       string
+	OpenAIModel     string
+	GeminiKey       string
+	GeminiModel     string
 }
 
 func getenv(key, def string) string {
@@ -48,8 +49,14 @@ func Load() (Config, error) {
 	if err != nil || topK < 1 {
 		return Config{}, fmt.Errorf("CACHE_TOP_K must be a positive integer")
 	}
-	threshold, _ := strconv.ParseFloat(getenv("SIMILARITY_THRESHOLD", "0.25"), 64)
-	capacity, _ := strconv.Atoi(getenv("CACHE_CAPACITY", "1000"))
+	threshold, err := strconv.ParseFloat(getenv("SIMILARITY_THRESHOLD", "0.25"), 64)
+	if err != nil {
+		return Config{}, fmt.Errorf("SIMILARITY_THRESHOLD must be a number")
+	}
+	capacity, err := strconv.Atoi(getenv("CACHE_CAPACITY", "1000"))
+	if err != nil {
+		return Config{}, fmt.Errorf("CACHE_CAPACITY must be an integer")
+	}
 
 	return Config{
 		TopK:           topK,
@@ -67,10 +74,11 @@ func Load() (Config, error) {
 		PersistenceBackend: getenv("PERSISTENCE_BACKEND", "redis"),
 		QueueBackend:       getenv("QUEUE_BACKEND", "redis"),
 
-		LLMMode:     getenv("LLM_MODE", "stub"),
-		OpenAIKey:   getenv("OPENAI_API_KEY", ""),
-		OpenAIModel: getenv("OPENAI_MODEL", "gpt-4o-mini"),
-		GeminiKey:   getenv("GEMINI_API_KEY", ""),
-		GeminiModel: getenv("GEMINI_MODEL", "gemini-flash-latest"),
+		LLMMode:         getenv("LLM_MODE", "stub"),
+		LLMFallbackMode: getenv("LLM_FALLBACK_MODE", ""),
+		OpenAIKey:       getenv("OPENAI_API_KEY", ""),
+		OpenAIModel:     getenv("OPENAI_MODEL", "gpt-4o-mini"),
+		GeminiKey:       getenv("GEMINI_API_KEY", ""),
+		GeminiModel:     getenv("GEMINI_MODEL", "gemini-flash-latest"),
 	}, nil
 }
