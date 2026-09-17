@@ -52,13 +52,30 @@ func Register(name string, factory plugin.Factory[Backend]) {
 	registry.Register(name, factory)
 }
 
-// New builds the Backend selected by cfg.LLMMode from the registry.
+// New builds the Backend selected by cfg.LLMMode from the registry. If
+// cfg.LLMFallbackMode is set, the result is wrapped so that a failure of the
+// primary backend (for any reason other than context cancellation) falls
+// back to the named backend instead of failing the request -- see
+// fallback.go. Leaving LLMFallbackMode empty (the default) reproduces the
+// previous behavior exactly: no wrapping, a primary-backend failure fails
+// the request.
 func New(cfg config.Config) (Backend, error) {
 	name := cfg.LLMMode
 	if name == "" {
 		name = ModeStub
 	}
-	return registry.Build(name, cfg)
+	primary, err := registry.Build(name, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.LLMFallbackMode == "" {
+		return primary, nil
+	}
+	fallback, err := registry.Build(cfg.LLMFallbackMode, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("build llm fallback: %w", err)
+	}
+	return NewFallback(primary, fallback), nil
 }
 
 // The built-in backends register themselves. New adapters follow the same shape
@@ -77,9 +94,10 @@ func init() {
 	})
 	Register(ModeGemini, func(cfg config.Config) (Backend, error) {
 		return &geminiBackend{
-			apiKey: cfg.GeminiKey,
-			model:  cfg.GeminiModel,
-			http:   &http.Client{Timeout: 30 * time.Second},
+			apiKey:  cfg.GeminiKey,
+			model:   cfg.GeminiModel,
+			baseURL: geminiAPIBase,
+			http:    &http.Client{Timeout: 30 * time.Second},
 		}, nil
 	})
 }
@@ -186,9 +204,10 @@ func extractResponseText(resp responsesResponse) string {
 // geminiBackend calls the Google Generative Language API (Gemini), which
 // offers a free tier suitable for demos without OpenAI billing.
 type geminiBackend struct {
-	apiKey string
-	model  string
-	http   *http.Client
+	apiKey  string
+	model   string
+	baseURL string // defaults to geminiAPIBase; overridable in tests
+	http    *http.Client
 }
 
 type geminiRequest struct {
@@ -211,13 +230,24 @@ type geminiResponse struct {
 	} `json:"candidates"`
 }
 
+// geminiMaxAttempts and geminiInitialBackoff bound Gemini's retry loop.
+// Backoff doubles each attempt: 500ms, 1s, 2s, 4s -- about 7.5s of sleep
+// across 5 attempts, which is meaningfully more forgiving of a short
+// capacity spike than a fixed 3-attempt/1.5s-total retry without drawing
+// out a request indefinitely.
+const (
+	geminiMaxAttempts    = 5
+	geminiInitialBackoff = 500 * time.Millisecond
+)
+
 func (g *geminiBackend) Complete(ctx context.Context, prompt string) (string, error) {
 	if g.apiKey == "" {
 		return "", fmt.Errorf("GEMINI_API_KEY not set")
 	}
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		reply, err := g.completeOnce(ctx, prompt)
+	backoff := geminiInitialBackoff
+	for attempt := 0; attempt < geminiMaxAttempts; attempt++ {
+		reply, retryable, err := g.completeOnce(ctx, prompt)
 		if err == nil {
 			return reply, nil
 		}
@@ -225,43 +255,70 @@ func (g *geminiBackend) Complete(ctx context.Context, prompt string) (string, er
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+		if !retryable {
+			return "", err
+		}
+		if attempt < geminiMaxAttempts-1 {
+			time.Sleep(backoff)
+			backoff *= 2
+		}
 	}
 	return "", lastErr
 }
 
-func (g *geminiBackend) completeOnce(ctx context.Context, prompt string) (string, error) {
+// isDailyQuotaExhausted reports whether a 429 response body is Google's
+// structured per-day quota error (quotaId containing "PerDay..."), as
+// opposed to a short-term rate limit. A per-day quota cannot recover within
+// any retry backoff this process would reasonably wait, so retrying it only
+// burns the fallback's time budget on a request that is certain to fail
+// again; a short-term rate limit genuinely might clear within a few seconds,
+// so it stays retryable. This is a plain substring check rather than full
+// JSON parsing of Google's error-details schema because the fields involved
+// are typed as free-form protobuf Any values -- matching the one field name
+// that actually distinguishes the two cases is simpler and just as reliable.
+func isDailyQuotaExhausted(body []byte) bool {
+	return bytes.Contains(body, []byte("PerDay"))
+}
+
+// completeOnce reports whether a failure is worth retrying: transient
+// network errors and HTTP 429/5xx responses are (the server may recover);
+// everything else -- a malformed request, an auth failure, a response with
+// no usable text, or a 429 that is specifically a per-day quota exhaustion --
+// will fail identically on every retry, so retrying it would only waste the
+// fallback's time budget for no benefit.
+func (g *geminiBackend) completeOnce(ctx context.Context, prompt string) (reply string, retryable bool, err error) {
 	body, err := json.Marshal(geminiRequest{Contents: []geminiContent{{Parts: []geminiPart{{Text: prompt}}}}})
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	url := fmt.Sprintf("%s/%s:generateContent?key=%s", geminiAPIBase, g.model, g.apiKey)
+	url := fmt.Sprintf("%s/%s:generateContent?key=%s", g.baseURL, g.model, g.apiKey)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := g.http.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("gemini unreachable: %w", err)
+		return "", true, fmt.Errorf("gemini unreachable: %w", err)
 	}
 	defer resp.Body.Close()
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return "", err
+		return "", true, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("gemini returned %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+		retryableStatus := (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500) && !isDailyQuotaExhausted(data)
+		return "", retryableStatus, fmt.Errorf("gemini returned %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 
 	var out geminiResponse
 	if err := json.Unmarshal(data, &out); err != nil {
-		return "", err
+		return "", false, err
 	}
 	if len(out.Candidates) == 0 {
-		return "", fmt.Errorf("gemini response did not contain text")
+		return "", false, fmt.Errorf("gemini response did not contain text")
 	}
 	var parts []string
 	for _, p := range out.Candidates[0].Content.Parts {
@@ -269,9 +326,9 @@ func (g *geminiBackend) completeOnce(ctx context.Context, prompt string) (string
 			parts = append(parts, text)
 		}
 	}
-	reply := strings.Join(parts, "\n")
+	reply = strings.Join(parts, "\n")
 	if reply == "" {
-		return "", fmt.Errorf("gemini response did not contain text")
+		return "", false, fmt.Errorf("gemini response did not contain text")
 	}
-	return reply, nil
+	return reply, false, nil
 }

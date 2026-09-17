@@ -46,6 +46,7 @@ services:
       PERSISTENCE_BACKEND: "${PERSISTENCE_BACKEND:-redis}"
       QUEUE_BACKEND: "${QUEUE_BACKEND:-redis}"
       LLM_MODE: "${LLM_MODE:-stub}"
+      LLM_FALLBACK_MODE: "${LLM_FALLBACK_MODE:-}"
       # Optional custom-provider example; used only with LLM_MODE=example-http.
       EXAMPLE_LLM_URL: "${EXAMPLE_LLM_URL:-http://example-llm:8090/complete}"
       EXAMPLE_LLM_MODEL: "${EXAMPLE_LLM_MODEL:-demo}"
