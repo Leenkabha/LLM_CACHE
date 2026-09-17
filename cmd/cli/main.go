@@ -66,6 +66,11 @@ func usage() {
 
 func query(prompt string) {
 	var out struct {
+		Results []struct {
+			ID       string  `json:"id"`
+			Reply    string  `json:"reply"`
+			Distance float64 `json:"distance"`
+		} `json:"results"`
 		Reply     string  `json:"reply"`
 		CacheHit  bool    `json:"cache_hit"`
 		Distance  float64 `json:"distance"`
@@ -76,7 +81,13 @@ func query(prompt string) {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("%s\n\n", out.Reply)
+	if len(out.Results) > 1 {
+		for i, result := range out.Results {
+			fmt.Printf("%d. %s\n[id=%s distance=%.4f]\n\n", i+1, result.Reply, result.ID, result.Distance)
+		}
+	} else {
+		fmt.Printf("%s\n\n", out.Reply)
+	}
 	fmt.Printf("[source=%s cache_hit=%v distance=%.4f latency=%dms]\n",
 		out.Source, out.CacheHit, out.Distance, out.LatencyMS)
 }

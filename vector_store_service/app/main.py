@@ -29,7 +29,7 @@ distance <= threshold. The exact formula belongs to the active metric.
 import os
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .index import VectorIndex, create_from_env as create_index
 from .metrics import SimilarityMetric, create_from_env as create_metric
@@ -56,11 +56,17 @@ class SearchRequest(BaseModel):
     """
 
     vector: list[float]
-    top_k: int = 1
+    top_k: int = Field(default=1, ge=1)
     threshold: float
 
 
+class SearchMatch(BaseModel):
+    id: str
+    distance: float
+
+
 class SearchResponse(BaseModel):
+    matches: list[SearchMatch] = Field(default_factory=list)
     hit: bool
     id: str = ""
     distance: float = -1.0  # -1.0 = "not applicable" placeholder on a miss
@@ -93,7 +99,10 @@ def search(req: SearchRequest) -> SearchResponse:
         result = _index.search(req.vector, req.top_k, req.threshold)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return SearchResponse(hit=result.hit, id=result.entry_id, distance=result.distance)
+    return SearchResponse(
+        hit=result.hit, id=result.entry_id, distance=result.distance,
+        matches=[SearchMatch(id=m.entry_id, distance=m.distance) for m in result.matches],
+    )
 
 
 @app.post("/upsert", response_model=UpsertResponse)

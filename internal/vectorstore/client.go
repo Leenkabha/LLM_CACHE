@@ -20,7 +20,7 @@ import (
 	"github.com/leenkabha/llm_cache/internal/plugin"
 )
 
-// Match is the nearest stored vector for a query.
+// Match is an accepted stored vector for a query; lower distance is better.
 type Match struct {
 	ID       string  `json:"id"`
 	Distance float64 `json:"distance"`
@@ -41,8 +41,9 @@ type RebuildEntry struct {
 // This is the pluggable seam: the orchestrator holds a VectorStore, so the
 // concrete vector database behind it is interchangeable.
 type VectorStore interface {
-	// Search returns the nearest entry within threshold, or nil on a miss.
-	Search(ctx context.Context, vec []float64, topK int, threshold float64) (*Match, error)
+	// Search returns up to topK entries with distance <= threshold, best first.
+	// An empty slice means a cache miss; topK must be positive.
+	Search(ctx context.Context, vec []float64, topK int, threshold float64) ([]Match, error)
 	// Upsert stores a vector and returns its generated id.
 	Upsert(ctx context.Context, vec []float64) (string, error)
 	// Delete removes a vector by id (used by eviction).
@@ -116,21 +117,25 @@ type searchRequest struct {
 }
 
 type searchResponse struct {
-	Hit  bool    `json:"hit"`
-	ID   string  `json:"id"`
-	Dist float64 `json:"distance"`
+	Matches []Match `json:"matches"`
 }
 
-func (c *httpVectorStore) Search(ctx context.Context, vec []float64, topK int, threshold float64) (*Match, error) {
-	body, _ := json.Marshal(searchRequest{Vector: vec, TopK: topK, Threshold: threshold})
+func (c *httpVectorStore) Search(ctx context.Context, vec []float64, topK int, threshold float64) ([]Match, error) {
+	if topK < 1 {
+		return nil, fmt.Errorf("topK must be at least 1")
+	}
+	body, err := json.Marshal(searchRequest{Vector: vec, TopK: topK, Threshold: threshold})
+	if err != nil {
+		return nil, err
+	}
 	var out searchResponse
 	if err := c.post(ctx, "/search", body, &out); err != nil {
 		return nil, err
 	}
-	if !out.Hit {
-		return nil, nil
+	if out.Matches == nil {
+		return nil, fmt.Errorf("vector store response missing matches array; upgrade the vector-store service")
 	}
-	return &Match{ID: out.ID, Distance: out.Dist}, nil
+	return out.Matches, nil
 }
 
 type upsertRequest struct {

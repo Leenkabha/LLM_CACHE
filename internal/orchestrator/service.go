@@ -93,6 +93,9 @@ func BuildDependencies(cfg config.Config) (Dependencies, error) {
 
 // New builds the orchestrator with the default config-selected adapters.
 func New(cfg config.Config) (*Service, error) {
+	if cfg.TopK < 1 {
+		return nil, fmt.Errorf("TopK must be at least 1")
+	}
 	deps, err := BuildDependencies(cfg)
 	if err != nil {
 		return nil, err
@@ -104,6 +107,12 @@ func New(cfg config.Config) (*Service, error) {
 // then restores state and starts the async cache worker. New is the
 // config-driven entry point; this exists for tests and custom wiring.
 func NewWithDependencies(cfg config.Config, deps Dependencies) (*Service, error) {
+	if cfg.TopK < 1 {
+		return nil, fmt.Errorf("TopK must be at least 1")
+	}
+	log.Printf("orchestrator startup: policy=%s capacity=%d persistence=%s queue=%s embedding=%s vectorstore=%s llm_mode=%s",
+		cfg.Policy, cfg.Capacity, cfg.PersistenceBackend, cfg.QueueBackend, cfg.EmbeddingBackend, cfg.VectorStoreBackend, cfg.LLMMode)
+
 	svc := &Service{
 		cfg:    cfg,
 		embed:  deps.Embedder,
@@ -119,6 +128,7 @@ func NewWithDependencies(cfg config.Config, deps Dependencies) (*Service, error)
 	if err := svc.rebuildFromStore(ctx); err != nil {
 		return nil, err
 	}
+	log.Printf("cache worker starting: queue_backend=%s", cfg.QueueBackend)
 	go svc.runCacheWorker(context.Background())
 
 	return svc, nil
@@ -139,18 +149,26 @@ type queryRequest struct {
 	Prompt string `json:"prompt"`
 }
 
+type queryResult struct {
+	ID       string  `json:"id"`
+	Reply    string  `json:"reply"`
+	Distance float64 `json:"distance"`
+}
+
 type queryResponse struct {
-	Reply     string  `json:"reply"`
-	CacheHit  bool    `json:"cache_hit"`
-	Distance  float64 `json:"distance"`
-	LatencyMS int64   `json:"latency_ms"`
-	Source    string  `json:"source"` // "cache" or "llm"
+	Results   []queryResult `json:"results"`
+	Reply     string        `json:"reply"`
+	CacheHit  bool          `json:"cache_hit"`
+	Distance  float64       `json:"distance"`
+	LatencyMS int64         `json:"latency_ms"`
+	Source    string        `json:"source"` // "cache" or "llm"
 }
 
 func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req queryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Prompt == "" {
+		log.Printf("query rejected: missing_or_invalid_prompt remote=%s", r.RemoteAddr)
 		writeError(w, http.StatusBadRequest, "missing or invalid prompt")
 		return
 	}
@@ -158,47 +176,63 @@ func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request) {
 
 	vec, err := s.embed.Embed(ctx, req.Prompt)
 	if err != nil {
+		log.Printf("query embedding failed: remote=%s err=%v", r.RemoteAddr, err)
 		writeError(w, http.StatusBadGateway, "embedding failed: "+err.Error())
 		return
 	}
 
-	match, err := s.vstore.Search(ctx, vec, 1, s.cfg.Threshold)
+	matches, err := s.vstore.Search(ctx, vec, s.cfg.TopK, s.cfg.Threshold)
 	if err != nil {
+		log.Printf("query vector search failed: remote=%s err=%v", r.RemoteAddr, err)
 		writeError(w, http.StatusBadGateway, "vector search failed: "+err.Error())
 		return
 	}
 
-	// Cache hit: reply lives in persistence, keyed by the matched entry id.
-	if match != nil {
-		if entry, ok := s.store.Load(match.ID); ok {
-			s.policy.OnHit(match.ID)
-			s.recordHit()
-			writeJSON(w, queryResponse{
-				Reply:     entry.Reply,
-				CacheHit:  true,
-				Distance:  match.Distance,
-				LatencyMS: time.Since(start).Milliseconds(),
-				Source:    "cache",
-			})
-			return
+	// Preserve the vector store's best-to-worst order while skipping stale IDs.
+	results := make([]queryResult, 0, len(matches))
+	for _, match := range matches {
+		entry, ok := s.store.Load(match.ID)
+		if !ok {
+			log.Printf("cache inconsistency: vector_match_id=%s missing_from_store=true", match.ID)
+			continue
 		}
-		// Vector matched but reply is gone (inconsistency) -> treat as miss.
+		results = append(results, queryResult{ID: match.ID, Reply: entry.Reply, Distance: match.Distance})
+		s.policy.OnHit(match.ID)
+	}
+	if len(results) > 0 {
+		s.recordHit()
+		best := results[0]
+		log.Printf("cache hit: id=%s distance=%.6f matches=%d policy=%s latency_ms=%d",
+			best.ID, best.Distance, len(results), s.policy.Current(), time.Since(start).Milliseconds())
+		writeJSON(w, queryResponse{
+			Reply:     best.Reply,
+			CacheHit:  true,
+			Distance:  best.Distance,
+			Results:   results,
+			LatencyMS: time.Since(start).Milliseconds(),
+			Source:    "cache",
+		})
+		return
 	}
 
 	// Cache miss: call the LLM, return immediately, update the cache async.
 	reply, err := s.llm.Complete(ctx, req.Prompt)
 	if err != nil {
+		log.Printf("query llm failed: remote=%s err=%v", r.RemoteAddr, err)
 		writeError(w, http.StatusBadGateway, "llm failed: "+err.Error())
 		return
 	}
 	s.recordMiss()
 	if err := s.queue.Enqueue(ctx, cachequeue.Job{Prompt: req.Prompt, Reply: reply, Vector: vec}); err != nil {
 		log.Printf("enqueue cache update failed: %v", err)
+	} else {
+		log.Printf("cache miss: queued cache update latency_ms=%d", time.Since(start).Milliseconds())
 	}
 
 	writeJSON(w, queryResponse{
 		Reply:     reply,
 		CacheHit:  false,
+		Results:   []queryResult{},
 		Distance:  -1,
 		LatencyMS: time.Since(start).Milliseconds(),
 		Source:    "llm",
@@ -206,6 +240,7 @@ func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) runCacheWorker(ctx context.Context) {
+	log.Printf("cache worker running")
 	s.queue.Run(ctx, s.handleCacheUpdateJob)
 }
 
@@ -219,6 +254,7 @@ func (s *Service) handleCacheUpdateJob(ctx context.Context, job cachequeue.Job) 
 func (s *Service) updateCache(ctx context.Context, prompt string, vec []float64, reply string) error {
 	id, err := s.vstore.Upsert(ctx, vec)
 	if err != nil {
+		log.Printf("cache update failed: vector_upsert err=%v", err)
 		return err
 	}
 	if err := s.store.Save(persistence.Entry{
@@ -229,10 +265,16 @@ func (s *Service) updateCache(ctx context.Context, prompt string, vec []float64,
 		CreatedAt: time.Now().UTC(),
 	}); err != nil {
 		_ = s.vstore.Delete(ctx, id)
+		log.Printf("cache update failed: store_save id=%s err=%v", id, err)
 		return err
 	}
 	s.policy.OnInsert(id)
-	return s.enforceCapacity(ctx)
+	if err := s.enforceCapacity(ctx); err != nil {
+		log.Printf("cache update failed: enforce_capacity id=%s err=%v", id, err)
+		return err
+	}
+	log.Printf("cache update saved: id=%s policy=%s", id, s.policy.Current())
+	return nil
 }
 
 // rebuildFromStore restores the RAM-only vector index from durable cache
@@ -242,6 +284,7 @@ func (s *Service) rebuildFromStore(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list cache entries for rebuild: %w", err)
 	}
+	log.Printf("cache rebuild starting: entries=%d", len(entries))
 
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].CreatedAt.Before(entries[j].CreatedAt)
@@ -259,6 +302,7 @@ func (s *Service) rebuildFromStore(ctx context.Context) error {
 	if err := s.rebuildVectorStoreWithRetry(ctx, rebuildEntries); err != nil {
 		return fmt.Errorf("rebuild vector store from cache: %w", err)
 	}
+	log.Printf("cache rebuild completed: entries=%d", len(entries))
 	return nil
 }
 
@@ -310,12 +354,15 @@ func (s *Service) enforceCapacity(ctx context.Context) error {
 		}
 
 		if err := s.store.Delete(victimID); err != nil {
+			log.Printf("cache eviction failed: store_delete id=%s err=%v", victimID, err)
 			return err
 		}
 		if err := s.vstore.Delete(ctx, victimID); err != nil {
+			log.Printf("cache eviction failed: vector_delete id=%s err=%v", victimID, err)
 			return err
 		}
 		s.policy.OnDelete(victimID)
+		log.Printf("cache eviction completed: id=%s policy=%s size_before=%d capacity=%d", victimID, s.policy.Current(), size, s.cfg.Capacity)
 	}
 }
 
@@ -338,6 +385,7 @@ func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
 		rate = float64(hits) / float64(total)
 	}
 	size, _ := s.store.Size()
+	log.Printf("stats requested: hits=%d misses=%d size=%d policy=%s", hits, misses, size, s.policy.Current())
 
 	writeJSON(w, statsResponse{
 		Hits:    hits,
@@ -349,15 +397,20 @@ func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleFlush(w http.ResponseWriter, r *http.Request) {
+	log.Printf("flush requested")
 	if err := s.vstore.Flush(r.Context()); err != nil {
+		log.Printf("flush failed: vectorstore err=%v", err)
 		writeError(w, http.StatusBadGateway, "flush failed: "+err.Error())
 		return
 	}
-	_ = s.store.Flush()
+	if err := s.store.Flush(); err != nil {
+		log.Printf("flush warning: store err=%v", err)
+	}
 	s.policy.Flush()
 	s.mu.Lock()
 	s.hits, s.misses = 0, 0
 	s.mu.Unlock()
+	log.Printf("flush completed")
 	writeJSON(w, map[string]string{"status": "flushed"})
 }
 
@@ -368,13 +421,16 @@ type policyRequest struct {
 func (s *Service) handlePolicy(w http.ResponseWriter, r *http.Request) {
 	var req policyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("policy change rejected: invalid_body err=%v", err)
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
 	if err := s.policy.Set(req.Policy); err != nil {
+		log.Printf("policy change rejected: requested=%s err=%v", req.Policy, err)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	log.Printf("policy change accepted: policy=%s", s.policy.Current())
 	writeJSON(w, map[string]string{"status": "ok", "policy": s.policy.Current()})
 }
 

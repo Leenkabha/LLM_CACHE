@@ -7,6 +7,7 @@ COPY internal ./internal
 RUN CGO_ENABLED=0 go build -o /out/orchestrator ./cmd/orchestrator
 
 FROM alpine:3.20
+WORKDIR /app
 COPY --from=build /out/orchestrator /usr/local/bin/orchestrator
 EXPOSE 8080
 ENTRYPOINT ["orchestrator"]

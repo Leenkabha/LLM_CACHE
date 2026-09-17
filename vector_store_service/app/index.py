@@ -43,17 +43,22 @@ BACKEND_FAISS = "faiss"
 DEFAULT_BACKEND = BACKEND_FAISS
 
 
-class SearchResult:
-    """Outcome of a nearest-vector search.
+class SearchMatch:
+    """One accepted match; lower distance means a better match."""
 
-    hit == False means no stored vector was within threshold; id/distance are
-    unset in that case.
-    """
-
-    def __init__(self, hit: bool, entry_id: str = "", distance: float = -1.0) -> None:
-        self.hit = hit
+    def __init__(self, entry_id: str, distance: float) -> None:
         self.entry_id = entry_id
         self.distance = distance
+
+
+class SearchResult:
+    """Accepted matches in best-to-worst order, with legacy first-match fields."""
+
+    def __init__(self, matches: list[SearchMatch] | None = None) -> None:
+        self.matches = matches if matches is not None else []
+        self.hit = bool(self.matches)
+        self.entry_id = self.matches[0].entry_id if self.hit else ""
+        self.distance = self.matches[0].distance if self.hit else -1.0
 
 
 class VectorIndex(ABC):
@@ -66,7 +71,7 @@ class VectorIndex(ABC):
 
     @abstractmethod
     def search(self, vector: list[float], top_k: int, threshold: float) -> SearchResult:
-        """Return the nearest stored vector within threshold, else a miss."""
+        """Return up to top_k matches with distance <= threshold, best first."""
 
     @abstractmethod
     def upsert(self, vector: list[float]) -> str:
@@ -147,23 +152,24 @@ class FaissVectorIndex(VectorIndex):
             )
 
     def search(self, vector: list[float], top_k: int, threshold: float) -> SearchResult:
-        if self._index.ntotal == 0:
-            return SearchResult(hit=False)
+        if top_k < 1:
+            raise ValueError("top_k must be at least 1")
         self._require_dim(vector)
+        if self._index.ntotal == 0:
+            return SearchResult()
 
+        # For the built-in exact index/metrics, filtering the nearest K is
+        # equivalent to filtering all entries and taking the best K.
         scores, ids = self._index.search(self._to_np(vector), min(top_k, self._index.ntotal))
-        best_score = scores[0][0]
-        best_int_id = ids[0][0]
-
-        # FAISS's own "found nothing" sentinel is id == -1.
-        if best_int_id == -1:
-            return SearchResult(hit=False)
-
-        distance = self._metric.to_distance(best_score)
-        if distance <= threshold:
-            return SearchResult(hit=True, entry_id=self._int_to_uuid[best_int_id], distance=distance)
-        # Found something, but not close enough to count.
-        return SearchResult(hit=False)
+        matches = []
+        for score, int_id in zip(scores[0], ids[0]):
+            if int_id == -1:
+                continue
+            distance = self._metric.to_distance(score)
+            if distance <= threshold:
+                matches.append(SearchMatch(self._int_to_uuid[int_id], distance))
+        matches.sort(key=lambda match: match.distance)
+        return SearchResult(matches[:top_k])
 
     def upsert(self, vector: list[float]) -> str:
         self._require_dim(vector)

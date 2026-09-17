@@ -21,6 +21,8 @@ const geminiAPIBase = "https://generativelanguage.googleapis.com/v1beta/models"
 
 // Backend is the contract the orchestrator depends on for completions.
 //
+// See docs/EXTENDING.md and example_http.go for a complete extension example.
+// HTTP implementations must honor ctx and be safe for concurrent Complete calls.
 // This is the pluggable seam: the orchestrator holds a Backend, so the concrete
 // LLM provider behind it is interchangeable.
 type Backend interface {

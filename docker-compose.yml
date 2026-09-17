@@ -37,6 +37,7 @@ services:
       VECTORSTORE_URL: "http://vectorstore:8002"
       REDIS_ADDR: "redis:6379"
       SIMILARITY_THRESHOLD: "${SIMILARITY_THRESHOLD:-0.25}"
+      CACHE_TOP_K: "${CACHE_TOP_K:-1}"
       CACHE_CAPACITY: "${CACHE_CAPACITY:-1000}"
       CACHE_POLICY: "${CACHE_POLICY:-lru}"
       # Pluggable adapters the orchestrator selects for each seam.
@@ -45,10 +46,18 @@ services:
       PERSISTENCE_BACKEND: "${PERSISTENCE_BACKEND:-redis}"
       QUEUE_BACKEND: "${QUEUE_BACKEND:-redis}"
       LLM_MODE: "${LLM_MODE:-stub}"
+      # Optional custom-provider example; used only with LLM_MODE=example-http.
+      EXAMPLE_LLM_URL: "${EXAMPLE_LLM_URL:-http://example-llm:8090/complete}"
+      EXAMPLE_LLM_MODEL: "${EXAMPLE_LLM_MODEL:-demo}"
+      EXAMPLE_LLM_TOKEN: "${EXAMPLE_LLM_TOKEN:-}"
+      EXAMPLE_LLM_TIMEOUT: "${EXAMPLE_LLM_TIMEOUT:-30s}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       OPENAI_MODEL: "${OPENAI_MODEL:-gpt-4o-mini}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       GEMINI_MODEL: "${GEMINI_MODEL:-gemini-flash-latest}"
+      LOG_FILE: "${LOG_FILE:-logs/orchestrator.log}"
+    volumes:
+      - ./logs:/app/logs
     depends_on:
       - embedding
       - vectorstore
@@ -65,3 +74,12 @@ services:
       - orchestrator
     profiles:
       - tools
+
+  # Optional deterministic provider for trying the extension contract.
+  example-llm:
+    profiles: [example-llm]
+    build:
+      context: .
+      dockerfile: examples/llm-server/Dockerfile
+    ports:
+      - "127.0.0.1:8090:8090"

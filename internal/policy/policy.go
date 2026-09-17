@@ -10,6 +10,8 @@ import (
 
 // EvictionPolicy is the contract implemented by policy-specific metadata.
 //
+// See docs/EXTENDING.md and fifo.go for a complete extension example.
+// Implementations must support concurrent hooks; Victim selects without deleting.
 // Cache entries stay policy-agnostic. LRU/LFU own their own access metadata
 // behind this interface, so changing policy on restart does not require changing
 // the persistence schema.
@@ -55,7 +57,15 @@ type Manager struct {
 
 // New builds a policy Manager for cfg.Policy.
 func New(cfg config.Config) (*Manager, error) {
-	return NewManager(cfg.Policy)
+	name := cfg.Policy
+	if name == "" {
+		name = PolicyLRU
+	}
+	p, err := registry.Build(name, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &Manager{policy: p}, nil
 }
 
 // NewManager builds a policy Manager for the named eviction policy.
@@ -63,14 +73,7 @@ func New(cfg config.Config) (*Manager, error) {
 // Unknown names are a configuration error, so a typo fails fast at startup
 // instead of silently defaulting.
 func NewManager(name string) (*Manager, error) {
-	if name == "" {
-		name = PolicyLRU
-	}
-	p, err := registry.Build(name, config.Config{})
-	if err != nil {
-		return nil, err
-	}
-	return &Manager{policy: p}, nil
+	return New(config.Config{Policy: name})
 }
 
 // Current returns the active policy name.

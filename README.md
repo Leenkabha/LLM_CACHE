@@ -4,6 +4,13 @@ A **semantic cache** that sits in front of a remote LLM. When someone asks a que
 
 ---
 
+## Extend the system
+
+See [the extension guide](docs/EXTENDING.md) for interface contracts, required
+functions, registration, configuration, and reusable tests for custom eviction
+policies and LLM providers. Working examples are `CACHE_POLICY=fifo` and
+`LLM_MODE=example-http`, with an optional local HTTP provider server.
+
 ## How it works
 
 ```
@@ -159,6 +166,60 @@ The orchestrator returns a dependency-aware health response:
 
 ## Using the cache
 
+### Return multiple cached replies
+
+Set `CACHE_TOP_K=3` in `.env` and rebuild/restart with `docker compose up --build`.
+The default is `1`; zero, negative, or non-integer values are rejected at startup.
+
+For each query, only matches with `distance <= SIMILARITY_THRESHOLD` are accepted.
+`/query` returns up to K cached replies in `results`, ordered by ascending distance
+(best first). The built-in exact FAISS search retrieves the nearest K and filters
+these candidates, which is equivalent to filtering all vectors before taking K.
+
+```json
+{
+  "reply": "Best cached reply",
+  "cache_hit": true,
+  "distance": 0.02,
+  "latency_ms": 5,
+  "source": "cache",
+  "results": [
+    {"id": "a", "reply": "Best cached reply", "distance": 0.02},
+    {"id": "b", "reply": "Another cached reply", "distance": 0.1}
+  ]
+}
+```
+
+The existing `reply` and `distance` fields refer to the first usable result.
+The CLI displays every result when more than one is returned. Equal-distance
+matches have no guaranteed relative order. Missing persisted replies are skipped
+without fetching replacement candidates, so fewer than K replies may be returned.
+If no usable replies remain, the LLM is called and `results` is `[]`.
+Each successful cache query counts as one hit; every returned entry receives a
+policy access update.
+
+The Python `/search` response adds `matches: [{"id": "...", "distance": 0.02}]`
+while retaining `hit`, `id`, and `distance` for older clients. Upgrade the Python
+service before or together with the Go orchestrator: the new Go client requires
+the `matches` array. Custom Go adapters must return `[]Match`; custom Python
+indexes must populate `SearchResult.matches` in best-to-worst order.
+
+### Test Top-K behavior
+
+```bash
+go test ./...
+go vet ./...
+python -m pip install -r vector_store_service/requirements-test.txt
+(cd vector_store_service && python -m unittest discover -s tests -v)
+python scripts/test_topk_integration.py
+```
+
+The integration runner starts a temporary local Python/FAISS service and runs the
+Go tests against it. Embeddings, persisted replies, the queue, and the LLM use test
+doubles; this check does not require Redis, a downloaded embedding model, or API
+credentials. Pass `--go /path/to/go` if Go is not on PATH.
+
+
 ### Send a prompt (cache miss — first time)
 ```bash
 curl -s localhost:8080/query \
@@ -267,10 +328,10 @@ unit-testable with in-memory doubles via `orchestrator.NewWithDependencies`.
 |------|------------------|----------------|----------|
 | Embedder (orchestrator → service) | `embedder.Embedder` | `http` | `EMBEDDING_BACKEND` |
 | Vector store (orchestrator → service) | `vectorstore.VectorStore` | `http` | `VECTORSTORE_BACKEND` |
-| LLM backend | `llm.Backend` | `stub`, `openai`, `gemini` | `LLM_MODE` |
+| LLM backend | `llm.Backend` | `stub`, `openai`, `gemini`, `example-http` | `LLM_MODE` |
 | Persistence | `persistence.Store` | `redis`, `memory` | `PERSISTENCE_BACKEND` |
 | Async queue | `cachequeue.Queue` | `redis` | `QUEUE_BACKEND` |
-| Eviction policy | `policy.EvictionPolicy` | `lru`, `lfu` | `CACHE_POLICY` |
+| Eviction policy | `policy.EvictionPolicy` | `lru`, `lfu`, `fifo` | `CACHE_POLICY` |
 | Embedding model *(inside embedding service)* | `EmbeddingModel` | `sentence-transformers` | `EMBEDDING_MODEL_BACKEND` |
 | Vector index *(inside vector-store service)* | `VectorIndex` | `faiss` | `VECTOR_INDEX_BACKEND` |
 | Similarity metric *(inside vector-store service)* | `SimilarityMetric` | `cosine`, `euclidean` | `SIMILARITY_METRIC` |
