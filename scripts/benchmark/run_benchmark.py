@@ -58,6 +58,7 @@ def main():
     ap.add_argument('--out',type=Path,required=True)
     ap.add_argument('--trials',type=int,default=2)
     ap.add_argument('--allow-isolated-flush',action='store_true')
+    ap.add_argument('--llm-pause',type=float,default=0,help='seconds to wait after each real LLM call (outside timing) to respect provider rate limits')
     args=ap.parse_args()
     if not args.allow_isolated_flush: ap.error('Use only a dedicated benchmark instance; --allow-isolated-flush is required.')
     if args.trials<1: ap.error('trials must be positive')
@@ -65,7 +66,7 @@ def main():
     if not queries or len({q['id'] for q in queries})!=len(queries): ap.error('nonempty workload with unique IDs required')
     args.out.mkdir(parents=True,exist_ok=False)
     meta={'started_utc':datetime.now(timezone.utc).isoformat(),'workload':spec,'trials':args.trials,
-          'workload_sha256':hashlib.sha256(args.workload.read_bytes()).hexdigest(),
+          'llm_pause_s':args.llm_pause,'workload_sha256':hashlib.sha256(args.workload.read_bytes()).hexdigest(),
           'method':'Sequential HTTP requests. Identical order in both arms. Empty cache at each trial start. Alternating arm order. Async settlement waits excluded from response latency but recorded separately.',
           'limitations':'Successful logical LLM completions, not provider retries, tokens or billed cost. Small authored workload unless replaced. Response quality needs manual review.'}
     rows=[]
@@ -82,9 +83,9 @@ def main():
         if meta['baseline_health'].get('provider') not in ('openai','gemini'): raise RuntimeError('Real-provider benchmark requires openai or gemini; simulation must be reported separately.')
         # Warm both paths and the embedding model; these calls are outside samples.
         warm={'prompt':'What is a computer? Answer in one short sentence.'}
-        request(args.baseline_url+'/query',warm)
+        request(args.baseline_url+'/query',warm); time.sleep(args.llm_pause)
         request(args.cache_url+'/flush',{})
-        request(args.cache_url+'/query',warm)
+        request(args.cache_url+'/query',warm); time.sleep(args.llm_pause)
         settled(args.cache_url,1)
         meta['warmup_calls']=2
         for trial in range(1,args.trials+1):
@@ -104,6 +105,7 @@ def main():
                     except RuntimeError as e:
                         row.update(status='error',error=str(e))
                     rows.append(row)
+                    if row.get('status')=='ok' and not row['cache_hit']: time.sleep(args.llm_pause)
                     with (args.out/'requests.jsonl').open('a',encoding='utf8') as f: f.write(json.dumps(row,ensure_ascii=False)+'\n')
                     print(json.dumps({k:row[k] for k in ('trial','arm','id','status','client_ms','cache_hit') if k in row}),flush=True)
                     if row['status']!='ok': raise RuntimeError('Run stopped after request failure; partial data retained, no savings claim.')

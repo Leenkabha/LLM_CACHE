@@ -26,6 +26,8 @@ Prepared tooling, **not benchmark results**. No measured savings exist until a r
 8. Screenshot the actual UI or evidence view. Label measured output as such, not as application UI. Plot only complete recorded runs and identify workload size and run ID.
 9. Install plotting dependencies with `python -m pip install -r requirements.txt`, then run `python plot_results.py ../../data/benchmark-results/run-01`. The plotter refuses incomplete runs.
 
+Free-tier providers enforce a requests-per-minute limit (Gemini `gemini-3.1-flash-lite`: 15/min); a run without pacing failed with HTTP 502 for this reason. Add `--llm-pause 5` to wait 5 seconds after each real LLM call. The pause is outside the timed section and recorded as `llm_pause_s` in `run.json`. See `docs/BENCHMARK_REPORT.md` for the measured run.
+
 The runner flushes the dedicated benchmark cache at port 18080. Never point it at shared or production services.
 
 The baseline lives in `cmd/benchmark-baseline` and uses the existing `llm.Backend` registry. The runner currently accepts the built-in real providers `gemini` and `openai`. A custom provider requires an explicit evidence-classification change in the runner; changing it does not require changing the cache implementation. Neither fallback nor artificial delays are enabled for real-provider measurements.
