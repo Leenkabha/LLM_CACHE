@@ -258,10 +258,47 @@ Response:
 
 Notice: `cache_hit: true`, `source: "cache"`, and much lower `latency_ms`.
 
-### Check hit/miss statistics
+### Check cache statistics
+
 ```bash
 curl -s localhost:8080/stats
 ```
+
+Response:
+```json
+{
+  "requests": 100,
+  "hits": 63,
+  "misses": 37,
+  "hit_rate": 0.63,
+  "avg_hit_latency_ms": 5.2,
+  "avg_miss_latency_ms": 431.7,
+  "avg_hit_distance": 0.031,
+  "evictions": 12,
+  "size": 63,
+  "policy": "lru"
+}
+```
+
+- `requests` is `hits + misses`. A request only counts once embedding and vector
+  search both succeed and a hit/miss outcome is determined; requests that fail
+  earlier (bad input, embedding/vector-store errors) are not counted, so they
+  can never skew the ratio.
+- `hits` counts once per successful cache query, regardless of how many Top-K
+  results were returned.
+- `misses` counts once per query that reached the LLM successfully.
+- `avg_hit_latency_ms` / `avg_miss_latency_ms` average the same per-request
+  `latency_ms` returned by `/query`, kept separately per outcome; each is `0`
+  until at least one request of that kind has occurred.
+- `avg_hit_distance` averages the best (lowest, first) match's `distance` for
+  each cache-hit query -- one value per hit even when `/query` returns
+  multiple Top-K results. It is `0` until at least one hit has occurred.
+- `evictions` counts entries actually removed from both the vector store and
+  persistence store to enforce `CACHE_CAPACITY`; a failed eviction attempt
+  (e.g. a transient vector-store error) is not counted until it succeeds.
+- All counters are reset to `0` by `/flush`.
+- These metrics are collected in the orchestrator only, independent of which
+  eviction policy, persistence backend, or LLM backend is selected.
 
 ### Wipe the cache
 ```bash

@@ -30,9 +30,13 @@ type Service struct {
 	queue  cachequeue.Queue
 	policy *policy.Manager
 
-	mu     sync.Mutex
-	hits   int
-	misses int
+	mu             sync.Mutex
+	hits           int
+	misses         int
+	hitLatencySum  time.Duration
+	missLatencySum time.Duration
+	hitDistanceSum float64
+	evictions      int
 }
 
 // Dependencies bundles the pluggable adapters the orchestrator runs on.
@@ -165,6 +169,29 @@ type queryResponse struct {
 	Source    string        `json:"source"` // "cache" or "llm"
 }
 
+// distanceEpsilon bounds the float32 rounding noise a vector store's
+// similarity metric can introduce for a near-identical vector (observed:
+// exactly one float32 ULP at magnitude 1.0, ~1.19e-7, from FAISS's cosine
+// metric). It is far smaller than any real similarity difference -- the
+// default SIMILARITY_THRESHOLD is 0.25 -- so it can never mask one.
+const distanceEpsilon = 1e-6
+
+// normalizeDistance clamps a tiny negative floating-point artifact to 0
+// without touching the -1 MISS sentinel (set independently, well outside this
+// band) or any other value outside the noise band, so an unexpected large
+// negative distance is never silently hidden.
+//
+// This is the single point every accepted vector-store match's distance
+// passes through, so the normalized value propagates consistently to the
+// top-level /query distance, results[].distance, hit logs, and
+// avg_hit_distance -- regardless of which VectorStoreBackend produced it.
+func normalizeDistance(d float64) float64 {
+	if d < 0 && d > -distanceEpsilon {
+		return 0
+	}
+	return d
+}
+
 func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req queryRequest
@@ -197,20 +224,21 @@ func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request) {
 			log.Printf("cache inconsistency: vector_match_id=%s missing_from_store=true", match.ID)
 			continue
 		}
-		results = append(results, queryResult{ID: match.ID, Reply: entry.Reply, Distance: match.Distance})
+		results = append(results, queryResult{ID: match.ID, Reply: entry.Reply, Distance: normalizeDistance(match.Distance)})
 		s.policy.OnHit(match.ID)
 	}
 	if len(results) > 0 {
-		s.recordHit()
+		elapsed := time.Since(start)
 		best := results[0]
+		s.recordHit(elapsed, best.Distance)
 		log.Printf("cache hit: id=%s distance=%.6f matches=%d policy=%s latency_ms=%d",
-			best.ID, best.Distance, len(results), s.policy.Current(), time.Since(start).Milliseconds())
+			best.ID, best.Distance, len(results), s.policy.Current(), elapsed.Milliseconds())
 		writeJSON(w, queryResponse{
 			Reply:     best.Reply,
 			CacheHit:  true,
 			Distance:  best.Distance,
 			Results:   results,
-			LatencyMS: time.Since(start).Milliseconds(),
+			LatencyMS: elapsed.Milliseconds(),
 			Source:    "cache",
 		})
 		return
@@ -223,11 +251,12 @@ func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "llm failed: "+err.Error())
 		return
 	}
-	s.recordMiss()
+	elapsed := time.Since(start)
+	s.recordMiss(elapsed)
 	if err := s.queue.Enqueue(ctx, cachequeue.Job{Prompt: req.Prompt, Reply: reply, Vector: vec}); err != nil {
 		log.Printf("enqueue cache update failed: %v", err)
 	} else {
-		log.Printf("cache miss: queued cache update latency_ms=%d", time.Since(start).Milliseconds())
+		log.Printf("cache miss: queued cache update latency_ms=%d", elapsed.Milliseconds())
 	}
 
 	writeJSON(w, queryResponse{
@@ -235,7 +264,7 @@ func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request) {
 		CacheHit:  false,
 		Results:   []queryResult{},
 		Distance:  -1,
-		LatencyMS: time.Since(start).Milliseconds(),
+		LatencyMS: elapsed.Milliseconds(),
 		Source:    "llm",
 	})
 }
@@ -363,37 +392,60 @@ func (s *Service) enforceCapacity(ctx context.Context) error {
 			return err
 		}
 		s.policy.OnDelete(victimID)
+		s.recordEviction()
 		log.Printf("cache eviction completed: id=%s policy=%s size_before=%d capacity=%d", victimID, s.policy.Current(), size, s.cfg.Capacity)
 	}
 }
 
 type statsResponse struct {
-	Hits    int     `json:"hits"`
-	Misses  int     `json:"misses"`
-	HitRate float64 `json:"hit_rate"`
-	Size    int     `json:"size"`
-	Policy  string  `json:"policy"`
+	Requests         int     `json:"requests"`
+	Hits             int     `json:"hits"`
+	Misses           int     `json:"misses"`
+	HitRate          float64 `json:"hit_rate"`
+	AvgHitLatencyMS  float64 `json:"avg_hit_latency_ms"`
+	AvgMissLatencyMS float64 `json:"avg_miss_latency_ms"`
+	AvgHitDistance   float64 `json:"avg_hit_distance"`
+	Evictions        int     `json:"evictions"`
+	Size             int     `json:"size"`
+	Policy           string  `json:"policy"`
 }
 
 func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	hits, misses := s.hits, s.misses
+	hitLatencySum, missLatencySum := s.hitLatencySum, s.missLatencySum
+	hitDistanceSum := s.hitDistanceSum
+	evictions := s.evictions
 	s.mu.Unlock()
 
-	total := hits + misses
+	requests := hits + misses
 	var rate float64
-	if total > 0 {
-		rate = float64(hits) / float64(total)
+	if requests > 0 {
+		rate = float64(hits) / float64(requests)
+	}
+	var avgHitLatency, avgMissLatency, avgHitDistance float64
+	if hits > 0 {
+		avgHitLatency = float64(hitLatencySum) / float64(hits) / float64(time.Millisecond)
+		avgHitDistance = hitDistanceSum / float64(hits)
+	}
+	if misses > 0 {
+		avgMissLatency = float64(missLatencySum) / float64(misses) / float64(time.Millisecond)
 	}
 	size, _ := s.store.Size()
-	log.Printf("stats requested: hits=%d misses=%d size=%d policy=%s", hits, misses, size, s.policy.Current())
+	log.Printf("stats requested: requests=%d hits=%d misses=%d evictions=%d size=%d policy=%s",
+		requests, hits, misses, evictions, size, s.policy.Current())
 
 	writeJSON(w, statsResponse{
-		Hits:    hits,
-		Misses:  misses,
-		HitRate: rate,
-		Size:    size,
-		Policy:  s.policy.Current(),
+		Requests:         requests,
+		Hits:             hits,
+		Misses:           misses,
+		HitRate:          rate,
+		AvgHitLatencyMS:  avgHitLatency,
+		AvgMissLatencyMS: avgMissLatency,
+		AvgHitDistance:   avgHitDistance,
+		Evictions:        evictions,
+		Size:             size,
+		Policy:           s.policy.Current(),
 	})
 }
 
@@ -410,6 +462,9 @@ func (s *Service) handleFlush(w http.ResponseWriter, r *http.Request) {
 	s.policy.Flush()
 	s.mu.Lock()
 	s.hits, s.misses = 0, 0
+	s.hitLatencySum, s.missLatencySum = 0, 0
+	s.hitDistanceSum = 0
+	s.evictions = 0
 	s.mu.Unlock()
 	log.Printf("flush completed")
 	writeJSON(w, map[string]string{"status": "flushed"})
@@ -474,8 +529,26 @@ func (s *Service) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"status": status, "checks": checks})
 }
 
-func (s *Service) recordHit()  { s.mu.Lock(); s.hits++; s.mu.Unlock() }
-func (s *Service) recordMiss() { s.mu.Lock(); s.misses++; s.mu.Unlock() }
+func (s *Service) recordHit(latency time.Duration, distance float64) {
+	s.mu.Lock()
+	s.hits++
+	s.hitLatencySum += latency
+	s.hitDistanceSum += distance
+	s.mu.Unlock()
+}
+
+func (s *Service) recordMiss(latency time.Duration) {
+	s.mu.Lock()
+	s.misses++
+	s.missLatencySum += latency
+	s.mu.Unlock()
+}
+
+func (s *Service) recordEviction() {
+	s.mu.Lock()
+	s.evictions++
+	s.mu.Unlock()
+}
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")

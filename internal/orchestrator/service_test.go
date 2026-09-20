@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/leenkabha/llm_cache/internal/cachequeue"
 	"github.com/leenkabha/llm_cache/internal/config"
@@ -87,6 +88,56 @@ func performQuery(t *testing.T, s *Service) (queryResponse, int) {
 	return out, rec.Code
 }
 
+func TestNormalizeDistance(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   float64
+		want float64
+	}{
+		{"exact zero unchanged", 0, 0},
+		{"actual observed FAISS artifact clamped", -1.1920928955078125e-7, 0},
+		{"value just inside epsilon clamped", -9.9e-7, 0},
+		{"epsilon boundary unchanged (not < -epsilon)", -1e-6, -1e-6},
+		{"normal positive distance unchanged", 0.0381, 0.0381},
+		{"miss sentinel unchanged", -1, -1},
+		{"larger negative value unchanged, not silently hidden", -0.5, -0.5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeDistance(tc.in); got != tc.want {
+				t.Fatalf("normalizeDistance(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestQueryNormalizesTinyNegativeHitDistance is a regression test for a real
+// FAISS float32 artifact observed during E2E testing: a near-identical vector
+// can score a distance of -1.1920928955078125e-7 (exactly one float32 ULP)
+// instead of exactly 0. This must be normalized consistently everywhere a hit
+// distance is exposed: the top-level response, results[], and avg_hit_distance.
+func TestQueryNormalizesTinyNegativeHitDistance(t *testing.T) {
+	const artifact = -1.1920928955078125e-7
+	s, _, _ := queryFixture(t, &fixedSearch{matches: []vectorstore.Match{{ID: "a", Distance: artifact}}}, 1)
+	out, status := performQuery(t, s)
+	if status != 200 {
+		t.Fatalf("status=%d", status)
+	}
+	if !out.CacheHit || out.Source != "cache" {
+		t.Fatalf("expected a hit, got response=%+v", out)
+	}
+	if out.Distance != 0 {
+		t.Fatalf("top-level distance = %v, want 0", out.Distance)
+	}
+	if len(out.Results) != 1 || out.Results[0].Distance != 0 {
+		t.Fatalf("results[0].distance = %+v, want 0", out.Results)
+	}
+
+	stats := fetchStats(t, s)
+	if stats.AvgHitDistance != 0 {
+		t.Fatalf("avg_hit_distance = %v, want 0", stats.AvgHitDistance)
+	}
+}
+
 func TestQueryMatches(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -138,6 +189,182 @@ func TestQuerySearchError(t *testing.T) {
 	_, status := performQuery(t, s)
 	if status != 502 || l.calls != 0 || len(q.jobs) != 0 {
 		t.Fatalf("status=%d llm=%d", status, l.calls)
+	}
+	if s.hits != 0 || s.misses != 0 {
+		t.Fatalf("failed query (vector search error) must not record hit/miss stats: hits=%d misses=%d", s.hits, s.misses)
+	}
+}
+
+func TestInvalidPromptDoesNotRecordStats(t *testing.T) {
+	s, _, _ := queryFixture(t, &fixedSearch{}, 1)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/query", strings.NewReader(`{}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", rec.Code)
+	}
+	if s.hits != 0 || s.misses != 0 {
+		t.Fatalf("rejected request (missing prompt) must not record hit/miss stats: hits=%d misses=%d", s.hits, s.misses)
+	}
+}
+
+// sleepEmbedder and sleepLLM add a deterministic delay so latency-recording
+// tests don't depend on the ambient speed of instant test doubles, which can
+// round to a zero duration and make an assertion on "latency was recorded"
+// flaky.
+type sleepEmbedder struct {
+	embedder.Embedder
+	d time.Duration
+}
+
+func (e sleepEmbedder) Embed(context.Context, string) ([]float64, error) {
+	time.Sleep(e.d)
+	return []float64{1, 0}, nil
+}
+
+type sleepLLM struct{ d time.Duration }
+
+func (l *sleepLLM) Complete(context.Context, string) (string, error) {
+	time.Sleep(l.d)
+	return "fresh reply", nil
+}
+
+func fetchStats(t *testing.T, s *Service) statsResponse {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stats", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/stats status=%d", rec.Code)
+	}
+	var stats statsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &stats); err != nil {
+		t.Fatalf("decode /stats: %v", err)
+	}
+	return stats
+}
+
+// TestStatsTracksRequestsAndLatencyByOutcome verifies /stats reports requests
+// as the sum of hits and misses, and that hit/miss latency are accumulated
+// independently -- a cache hit must never contribute to avg_miss_latency_ms
+// and vice versa.
+func TestStatsTracksRequestsAndLatencyByOutcome(t *testing.T) {
+	const delay = 5 * time.Millisecond
+
+	hitSvc, _, _ := queryFixture(t, &fixedSearch{matches: []vectorstore.Match{{ID: "a", Distance: 0.02}}}, 1)
+	hitSvc.embed = sleepEmbedder{d: delay}
+	if _, status := performQuery(t, hitSvc); status != 200 {
+		t.Fatalf("hit query status=%d", status)
+	}
+	hitStats := fetchStats(t, hitSvc)
+	if hitStats.Requests != 1 || hitStats.Hits != 1 || hitStats.Misses != 0 || hitStats.HitRate != 1 {
+		t.Fatalf("hit stats=%+v", hitStats)
+	}
+	if hitStats.AvgHitLatencyMS < float64(delay/time.Millisecond) {
+		t.Fatalf("avg_hit_latency_ms=%v, want at least %v (the injected delay)", hitStats.AvgHitLatencyMS, delay)
+	}
+	if hitStats.AvgMissLatencyMS != 0 {
+		t.Fatalf("avg_miss_latency_ms=%v, want 0 (no miss occurred)", hitStats.AvgMissLatencyMS)
+	}
+	if hitStats.AvgHitDistance != 0.02 {
+		t.Fatalf("avg_hit_distance=%v, want 0.02 (the single hit's distance)", hitStats.AvgHitDistance)
+	}
+
+	missSvc, _, _ := queryFixture(t, &fixedSearch{}, 1)
+	missSvc.llm = &sleepLLM{d: delay}
+	if _, status := performQuery(t, missSvc); status != 200 {
+		t.Fatalf("miss query status=%d", status)
+	}
+	missStats := fetchStats(t, missSvc)
+	if missStats.Requests != 1 || missStats.Hits != 0 || missStats.Misses != 1 || missStats.HitRate != 0 {
+		t.Fatalf("miss stats=%+v", missStats)
+	}
+	if missStats.AvgMissLatencyMS < float64(delay/time.Millisecond) {
+		t.Fatalf("avg_miss_latency_ms=%v, want at least %v (the injected delay)", missStats.AvgMissLatencyMS, delay)
+	}
+	if missStats.AvgHitLatencyMS != 0 {
+		t.Fatalf("avg_hit_latency_ms=%v, want 0 (no hit occurred)", missStats.AvgHitLatencyMS)
+	}
+	if missStats.AvgHitDistance != 0 {
+		t.Fatalf("avg_hit_distance=%v, want 0 (no hit occurred)", missStats.AvgHitDistance)
+	}
+}
+
+// TestStatsAvgHitDistanceUsesBestMatchOnly verifies that a Top-K hit query
+// returning multiple results still contributes exactly one distance value to
+// avg_hit_distance -- the best (first, lowest-distance) match -- not an
+// average or sum across all K returned results.
+func TestStatsAvgHitDistanceUsesBestMatchOnly(t *testing.T) {
+	v := &fixedSearch{matches: []vectorstore.Match{
+		{ID: "a", Distance: 0.02},
+		{ID: "b", Distance: 0.10},
+		{ID: "c", Distance: 0.25},
+	}}
+	s, _, _ := queryFixture(t, v, 3)
+	out, status := performQuery(t, s)
+	if status != 200 || len(out.Results) != 3 {
+		t.Fatalf("status=%d results=%+v", status, out.Results)
+	}
+
+	stats := fetchStats(t, s)
+	if stats.Hits != 1 {
+		t.Fatalf("hits=%d, want 1 (one hit per query regardless of Top-K result count)", stats.Hits)
+	}
+	if stats.AvgHitDistance != 0.02 {
+		t.Fatalf("avg_hit_distance=%v, want 0.02 (best match only, not averaged across all %d results)", stats.AvgHitDistance, len(out.Results))
+	}
+
+	// A second Top-K hit with a different best distance and a different
+	// number of runner-up results must average with the first hit's best
+	// distance only -- proving no runner-up distance from either query ever
+	// entered the sum.
+	v.matches = []vectorstore.Match{
+		{ID: "b", Distance: 0.08},
+		{ID: "c", Distance: 0.20},
+	}
+	out2, status2 := performQuery(t, s)
+	if status2 != 200 || len(out2.Results) != 2 {
+		t.Fatalf("status=%d results=%+v", status2, out2.Results)
+	}
+	stats2 := fetchStats(t, s)
+	if stats2.Hits != 2 {
+		t.Fatalf("hits=%d, want 2", stats2.Hits)
+	}
+	if want := (0.02 + 0.08) / 2; stats2.AvgHitDistance != want {
+		t.Fatalf("avg_hit_distance=%v, want %v (average of the two best distances 0.02 and 0.08 only)", stats2.AvgHitDistance, want)
+	}
+}
+
+// TestFlushResetsAllMetrics documents that /flush clears every counter this
+// change adds, not just the pre-existing hits/misses. It uses fakeVectorStore
+// (from consistency_test.go) rather than the query-only fixedSearch stub
+// because handleFlush also calls vstore.Flush, which fixedSearch's embedded
+// nil vectorstore.VectorStore does not implement.
+func TestFlushResetsAllMetrics(t *testing.T) {
+	vstore := newFakeVectorStore()
+	store := persistence.NewMemoryStore()
+	pol, err := policy.NewManager("lru")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newConsistencyService(t, vstore, store, pol, 0)
+
+	if err := s.updateCache(context.Background(), "cached prompt", []float64{1, 0}, "cached reply"); err != nil {
+		t.Fatal(err)
+	}
+	if _, status := performQuery(t, s); status != 200 {
+		t.Fatalf("query status=%d", status)
+	}
+	s.recordEviction()
+
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/flush", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/flush status=%d", rec.Code)
+	}
+
+	stats := fetchStats(t, s)
+	if stats.Requests != 0 || stats.Hits != 0 || stats.Misses != 0 || stats.HitRate != 0 ||
+		stats.AvgHitLatencyMS != 0 || stats.AvgMissLatencyMS != 0 || stats.AvgHitDistance != 0 || stats.Evictions != 0 {
+		t.Fatalf("stats after flush not fully reset: %+v", stats)
 	}
 }
 

@@ -223,6 +223,9 @@ func TestEnforceCapacityEvictionCaseC(t *testing.T) {
 	if err := s.updateCache(ctx, "first", []float64{1, 0}, "reply-1"); err != nil {
 		t.Fatal(err)
 	}
+	if s.evictions != 0 {
+		t.Fatalf("evictions=%d after first insert, want 0 (capacity not yet exceeded)", s.evictions)
+	}
 	// The eviction victim will be "id-1" (LRU, oldest). Make its vector-store
 	// deletion fail once so Redis deletion succeeds but the vector doesn't.
 	vstore.mu.Lock()
@@ -232,6 +235,9 @@ func TestEnforceCapacityEvictionCaseC(t *testing.T) {
 	err = s.updateCache(ctx, "second", []float64{0, 1}, "reply-2")
 	if err == nil {
 		t.Fatal("expected enforceCapacity to surface the vector-store delete failure")
+	}
+	if s.evictions != 0 {
+		t.Fatalf("evictions=%d after failed eviction attempt, want 0 (delete did not fully succeed)", s.evictions)
 	}
 
 	// Document the inconsistency window: Redis no longer has "id-1"...
@@ -255,6 +261,16 @@ func TestEnforceCapacityEvictionCaseC(t *testing.T) {
 	}
 	if vstore.has("id-1") {
 		t.Fatal("expected id-1 fully evicted from the vector store after self-healing retry")
+	}
+	// Two evictions, not one: the retry first completes id-1's interrupted
+	// eviction (its persistence entry was already gone, but it was still
+	// orphaned in the vector store and policy metadata, so store.Delete is a
+	// harmless no-op and vstore.Delete/OnDelete finish the job -- counted
+	// once). Persistence size is still above capacity afterward (id-1 was
+	// already absent from it), so enforceCapacity's loop evicts a second,
+	// genuine victim (id-2) in the same pass.
+	if s.evictions != 2 {
+		t.Fatalf("evictions=%d after self-healing retry, want 2 (stale id-1 completion + genuine id-2 eviction)", s.evictions)
 	}
 	if _, ok := pol.Victim(); ok {
 		size, _ := store.Size()
@@ -286,6 +302,9 @@ func TestEvictionSynchronizesAllStoresAndStopsSemanticHits(t *testing.T) {
 	}
 
 	// capacity=1 must have evicted "first prompt"'s entry (id-1) everywhere.
+	if s.evictions != 1 {
+		t.Fatalf("evictions=%d, want 1", s.evictions)
+	}
 	if _, ok := store.Load("id-1"); ok {
 		t.Fatal("evicted entry still present in persistence")
 	}
