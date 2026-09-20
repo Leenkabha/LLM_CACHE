@@ -1,0 +1,17 @@
+{
+ "description": "Authored demonstration workload, NOT instructor traces. Four topics, each with one paraphrase and one exact repeat. Results apply only to this small repeated workload.",
+ "queries": [
+  {"id":"vm-1","group":"virtual-memory","kind":"new","prompt":"What is virtual memory? Answer in one short sentence."},
+  {"id":"dns-1","group":"dns","kind":"new","prompt":"What does DNS do? Answer in one short sentence."},
+  {"id":"lru-1","group":"lru","kind":"new","prompt":"How does LRU cache eviction work? Answer in one short sentence."},
+  {"id":"tcp-1","group":"tcp","kind":"new","prompt":"What is the purpose of TCP? Answer in one short sentence."},
+  {"id":"vm-2","group":"virtual-memory","kind":"paraphrase","prompt":"Can you explain what virtual memory is? Answer in one short sentence."},
+  {"id":"dns-2","group":"dns","kind":"paraphrase","prompt":"What is the role of the Domain Name System? Answer in one short sentence."},
+  {"id":"lru-2","group":"lru","kind":"paraphrase","prompt":"Which entry does a least recently used cache evict? Answer in one short sentence."},
+  {"id":"tcp-2","group":"tcp","kind":"paraphrase","prompt":"What does the Transmission Control Protocol provide? Answer in one short sentence."},
+  {"id":"vm-3","group":"virtual-memory","kind":"repeat","prompt":"What is virtual memory? Answer in one short sentence."},
+  {"id":"dns-3","group":"dns","kind":"repeat","prompt":"What does DNS do? Answer in one short sentence."},
+  {"id":"lru-3","group":"lru","kind":"repeat","prompt":"How does LRU cache eviction work? Answer in one short sentence."},
+  {"id":"tcp-3","group":"tcp","kind":"repeat","prompt":"What is the purpose of TCP? Answer in one short sentence."}
+ ]
+}

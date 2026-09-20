@@ -300,6 +300,14 @@ Response:
 - These metrics are collected in the orchestrator only, independent of which
   eviction policy, persistence backend, or LLM backend is selected.
 
+### Measure cache performance
+
+See [the benchmark guide](scripts/benchmark/README.md) for a dedicated Compose
+stack that compares direct calls through the same LLM adapter with requests
+through the semantic cache. It records per-request timings, cache statistics
+and provider completion counts, then plots completed runs. The included small
+workload is an authored demonstration, not instructor traces or measured results.
+
 ### Wipe the cache
 ```bash
 curl -s -X POST localhost:8080/flush

@@ -1,0 +1,45 @@
+name: llm-cache-benchmark
+x-llm: &llm
+  LLM_MODE: "${LLM_MODE:?Set LLM_MODE to gemini or openai}"
+  LLM_FALLBACK_MODE: ""
+  OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+  OPENAI_MODEL: "${OPENAI_MODEL:-gpt-4o-mini}"
+  GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+  GEMINI_MODEL: "${GEMINI_MODEL:-gemini-flash-latest}"
+services:
+  embedding:
+    build: ../../embedding_service
+    environment:
+      EMBEDDING_MODEL_BACKEND: sentence-transformers
+      EMBEDDING_MODEL: all-MiniLM-L6-v2
+  vectorstore:
+    build: ../../vector_store_service
+    environment:
+      VECTOR_INDEX_BACKEND: faiss
+      SIMILARITY_METRIC: cosine
+      VECTOR_DIM: "384"
+  redis:
+    image: redis:7-alpine
+  orchestrator:
+    build:
+      context: ../..
+      dockerfile: deploy/orchestrator.Dockerfile
+    ports: ["127.0.0.1:18080:8080"]
+    environment:
+      <<: *llm
+      EMBEDDING_URL: http://embedding:8001
+      VECTORSTORE_URL: http://vectorstore:8002
+      REDIS_ADDR: redis:6379
+      SIMILARITY_THRESHOLD: "0.25"
+      CACHE_TOP_K: "1"
+      CACHE_CAPACITY: "1000"
+      CACHE_POLICY: lru
+      LOG_FILE: /tmp/orchestrator.log
+    depends_on: [embedding, vectorstore, redis]
+  baseline:
+    build:
+      context: ../..
+      dockerfile: deploy/benchmark.Dockerfile
+    ports: ["127.0.0.1:18081:8080"]
+    environment: *llm
+
