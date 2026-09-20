@@ -61,7 +61,7 @@ services:
       LLM_MODE: "gemini"
       LLM_FALLBACK_MODE: ""
       GEMINI_API_KEY: "${GEMINI_API_KEY:?set GEMINI_API_KEY in production.env}"
-      GEMINI_MODEL: "${GEMINI_MODEL:-gemini-flash-latest}"
+      GEMINI_MODEL: "${GEMINI_MODEL:-gemini-3.1-flash-lite}"
       GEMINI_DAILY_REQUEST_LIMIT: "${GEMINI_DAILY_REQUEST_LIMIT:-0}"
       GEMINI_DAILY_TOKEN_BUDGET: "${GEMINI_DAILY_TOKEN_BUDGET:-0}"
       ADMIN_TOKEN: "${ADMIN_TOKEN:?set ADMIN_TOKEN in production.env}"
