@@ -207,6 +207,19 @@ func TestInvalidPromptDoesNotRecordStats(t *testing.T) {
 	}
 }
 
+func TestOversizedPromptRejectedBeforeLLM(t *testing.T) {
+	s, l, q := queryFixture(t, &fixedSearch{}, 1)
+	body := `{"prompt":"` + strings.Repeat("x", maxQueryBodyBytes) + `"}`
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/query", strings.NewReader(body)))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d, want 413", rec.Code)
+	}
+	if l.calls != 0 || len(q.jobs) != 0 || s.hits != 0 || s.misses != 0 {
+		t.Fatalf("oversized prompt must not reach the LLM or stats: llm=%d jobs=%d hits=%d misses=%d", l.calls, len(q.jobs), s.hits, s.misses)
+	}
+}
+
 // sleepEmbedder and sleepLLM add a deterministic delay so latency-recording
 // tests don't depend on the ambient speed of instant test doubles, which can
 // round to a zero duration and make an assertion on "latency was recorded"

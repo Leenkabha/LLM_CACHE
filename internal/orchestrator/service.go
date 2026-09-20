@@ -5,6 +5,7 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -192,10 +193,21 @@ func normalizeDistance(d float64) float64 {
 	return d
 }
 
+// maxQueryBodyBytes caps a /query request so one caller cannot push huge
+// prompts through to the LLM and burn its quota.
+const maxQueryBodyBytes = 16 << 10
+
 func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req queryRequest
+	r.Body = http.MaxBytesReader(w, r.Body, maxQueryBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Prompt == "" {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			log.Printf("query rejected: body_too_large remote=%s", r.RemoteAddr)
+			writeError(w, http.StatusRequestEntityTooLarge, "prompt too large")
+			return
+		}
 		log.Printf("query rejected: missing_or_invalid_prompt remote=%s", r.RemoteAddr)
 		writeError(w, http.StatusBadRequest, "missing or invalid prompt")
 		return
