@@ -1,0 +1,80 @@
+# Hosted deployment: only the reverse proxy is reachable from outside.
+# The embedding, vector-store, Redis and orchestrator ports stay on the private
+# Docker network. Real Gemini answers are required (no stub, no fallback to it).
+#
+#   cp production.env.example production.env   # then fill it in
+#   docker compose -f docker-compose.prod.yml --env-file production.env up --build -d
+#
+# See docs/DEPLOYMENT.md.
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: "${SITE_ADDRESS:-:80}"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - orchestrator
+
+  embedding:
+    build: ./embedding_service
+    restart: unless-stopped
+    environment:
+      EMBEDDING_MODEL_BACKEND: "${EMBEDDING_MODEL_BACKEND:-sentence-transformers}"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-all-MiniLM-L6-v2}"
+
+  vectorstore:
+    build: ./vector_store_service
+    restart: unless-stopped
+    environment:
+      VECTOR_INDEX_BACKEND: "${VECTOR_INDEX_BACKEND:-faiss}"
+      SIMILARITY_METRIC: "${SIMILARITY_METRIC:-cosine}"
+      VECTOR_DIM: "${VECTOR_DIM:-384}"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: deploy/orchestrator.Dockerfile
+    restart: unless-stopped
+    environment:
+      ORCH_ADDR: ":8080"
+      EMBEDDING_URL: "http://embedding:8001"
+      VECTORSTORE_URL: "http://vectorstore:8002"
+      REDIS_ADDR: "redis:6379"
+      SIMILARITY_THRESHOLD: "${SIMILARITY_THRESHOLD:-0.25}"
+      CACHE_TOP_K: "${CACHE_TOP_K:-1}"
+      CACHE_CAPACITY: "${CACHE_CAPACITY:-1000}"
+      CACHE_POLICY: "${CACHE_POLICY:-lru}"
+      LLM_MODE: "gemini"
+      LLM_FALLBACK_MODE: ""
+      GEMINI_API_KEY: "${GEMINI_API_KEY:?set GEMINI_API_KEY in production.env}"
+      GEMINI_MODEL: "${GEMINI_MODEL:-gemini-flash-latest}"
+      ADMIN_TOKEN: "${ADMIN_TOKEN:?set ADMIN_TOKEN in production.env}"
+      RATE_LIMIT_PER_MIN: "${RATE_LIMIT_PER_MIN:-30}"
+      # Safe here: the orchestrator is only reachable through Caddy.
+      TRUST_PROXY: "true"
+      LOG_FILE: "logs/orchestrator.log"
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - embedding
+      - vectorstore
+      - redis
+
+volumes:
+  redis_data:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,9 @@
+# Public entry point for the hosted deployment (see docs/DEPLOYMENT.md).
+#
+# SITE_ADDRESS=:80                 plain HTTP on the server's IP (default)
+# SITE_ADDRESS=cache.example.com   automatic HTTPS via Let's Encrypt
+#                                  (DNS must point at this server; ports 80 and 443 open)
+{$SITE_ADDRESS::80} {
+	encode gzip
+	reverse_proxy orchestrator:8080
+}

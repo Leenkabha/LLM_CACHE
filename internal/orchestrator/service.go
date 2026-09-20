@@ -147,7 +147,7 @@ func (s *Service) Routes() http.Handler {
 	mux.HandleFunc("POST /flush", s.handleFlush)
 	mux.HandleFunc("POST /policy", s.handlePolicy)
 	mux.HandleFunc("GET /health", s.handleHealth)
-	return mux
+	return newGuard(mux, s.cfg.AdminToken, s.cfg.RateLimitPerMin, s.cfg.TrustProxy)
 }
 
 type queryRequest struct {

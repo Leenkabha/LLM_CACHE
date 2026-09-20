@@ -18,6 +18,11 @@ type Config struct {
 	Policy         string  // registered eviction policy, e.g. "lru", "lfu", "fifo"
 	LogFile        string  // optional path for persistent orchestrator logs
 
+	// Public-deployment protections; all off by default for local use.
+	AdminToken      string // when set, POST /flush and /policy need "Authorization: Bearer <token>"
+	RateLimitPerMin int    // when > 0, max POST /query requests per client IP per minute
+	TrustProxy      bool   // use X-Forwarded-For for the client IP (only behind a reverse proxy)
+
 	// Backend selectors choose which adapter implements each pluggable seam.
 	// Each maps to a factory in the matching internal package, so a new
 	// implementation is opt-in via configuration without any code changes to
@@ -58,16 +63,28 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("CACHE_CAPACITY must be an integer")
 	}
 
+	rateLimit, err := strconv.Atoi(getenv("RATE_LIMIT_PER_MIN", "0"))
+	if err != nil || rateLimit < 0 {
+		return Config{}, fmt.Errorf("RATE_LIMIT_PER_MIN must be a non-negative integer")
+	}
+	trustProxy, err := strconv.ParseBool(getenv("TRUST_PROXY", "false"))
+	if err != nil {
+		return Config{}, fmt.Errorf("TRUST_PROXY must be true or false")
+	}
+
 	return Config{
-		TopK:           topK,
-		Addr:           getenv("ORCH_ADDR", ":8080"),
-		EmbeddingURL:   getenv("EMBEDDING_URL", "http://localhost:8001"),
-		VectorStoreURL: getenv("VECTORSTORE_URL", "http://localhost:8002"),
-		RedisAddr:      getenv("REDIS_ADDR", "localhost:6379"),
-		Threshold:      threshold,
-		Capacity:       capacity,
-		Policy:         getenv("CACHE_POLICY", "lru"),
-		LogFile:        getenv("LOG_FILE", "logs/orchestrator.log"),
+		AdminToken:      getenv("ADMIN_TOKEN", ""),
+		RateLimitPerMin: rateLimit,
+		TrustProxy:      trustProxy,
+		TopK:            topK,
+		Addr:            getenv("ORCH_ADDR", ":8080"),
+		EmbeddingURL:    getenv("EMBEDDING_URL", "http://localhost:8001"),
+		VectorStoreURL:  getenv("VECTORSTORE_URL", "http://localhost:8002"),
+		RedisAddr:       getenv("REDIS_ADDR", "localhost:6379"),
+		Threshold:       threshold,
+		Capacity:        capacity,
+		Policy:          getenv("CACHE_POLICY", "lru"),
+		LogFile:         getenv("LOG_FILE", "logs/orchestrator.log"),
 
 		EmbeddingBackend:   getenv("EMBEDDING_BACKEND", "http"),
 		VectorStoreBackend: getenv("VECTORSTORE_BACKEND", "http"),
