@@ -98,6 +98,7 @@ func init() {
 			model:   cfg.GeminiModel,
 			baseURL: geminiAPIBase,
 			http:    &http.Client{Timeout: 30 * time.Second},
+			usage:   newUsageTracker(cfg.GeminiDailyRequestLimit, cfg.GeminiDailyTokenBudget),
 		}, nil
 	})
 }
@@ -208,6 +209,7 @@ type geminiBackend struct {
 	model   string
 	baseURL string // defaults to geminiAPIBase; overridable in tests
 	http    *http.Client
+	usage   *usageTracker // optional; nil disables usage/quota logging
 }
 
 type geminiRequest struct {
@@ -228,6 +230,7 @@ type geminiResponse struct {
 			Parts []geminiPart `json:"parts"`
 		} `json:"content"`
 	} `json:"candidates"`
+	UsageMetadata geminiUsage `json:"usageMetadata"`
 }
 
 // geminiMaxAttempts and geminiInitialBackoff bound Gemini's retry loop.
@@ -309,6 +312,9 @@ func (g *geminiBackend) completeOnce(ctx context.Context, prompt string) (reply 
 		return "", true, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode == http.StatusTooManyRequests && isDailyQuotaExhausted(data) {
+			g.usage.recordQuotaExhausted(g.model, data)
+		}
 		retryableStatus := (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500) && !isDailyQuotaExhausted(data)
 		return "", retryableStatus, fmt.Errorf("gemini returned %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
@@ -317,6 +323,7 @@ func (g *geminiBackend) completeOnce(ctx context.Context, prompt string) (reply 
 	if err := json.Unmarshal(data, &out); err != nil {
 		return "", false, err
 	}
+	g.usage.recordSuccess(g.model, out.UsageMetadata)
 	if len(out.Candidates) == 0 {
 		return "", false, fmt.Errorf("gemini response did not contain text")
 	}

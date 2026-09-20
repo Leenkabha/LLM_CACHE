@@ -38,6 +38,11 @@ type Config struct {
 	OpenAIModel     string
 	GeminiKey       string
 	GeminiModel     string
+
+	// Optional Gemini budgets used only to log how much is left (Gemini does not
+	// report remaining quota). 0 means unknown/unlimited.
+	GeminiDailyRequestLimit int // e.g. 20 on the free tier
+	GeminiDailyTokenBudget  int // your own per-day token allowance
 }
 
 func getenv(key, def string) string {
@@ -72,6 +77,15 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("TRUST_PROXY must be true or false")
 	}
 
+	geminiReqLimit, err := strconv.Atoi(getenv("GEMINI_DAILY_REQUEST_LIMIT", "0"))
+	if err != nil || geminiReqLimit < 0 {
+		return Config{}, fmt.Errorf("GEMINI_DAILY_REQUEST_LIMIT must be a non-negative integer")
+	}
+	geminiTokenBudget, err := strconv.Atoi(getenv("GEMINI_DAILY_TOKEN_BUDGET", "0"))
+	if err != nil || geminiTokenBudget < 0 {
+		return Config{}, fmt.Errorf("GEMINI_DAILY_TOKEN_BUDGET must be a non-negative integer")
+	}
+
 	return Config{
 		AdminToken:      getenv("ADMIN_TOKEN", ""),
 		RateLimitPerMin: rateLimit,
@@ -97,5 +111,8 @@ func Load() (Config, error) {
 		OpenAIModel:     getenv("OPENAI_MODEL", "gpt-4o-mini"),
 		GeminiKey:       getenv("GEMINI_API_KEY", ""),
 		GeminiModel:     getenv("GEMINI_MODEL", "gemini-flash-latest"),
+
+		GeminiDailyRequestLimit: geminiReqLimit,
+		GeminiDailyTokenBudget:  geminiTokenBudget,
 	}, nil
 }

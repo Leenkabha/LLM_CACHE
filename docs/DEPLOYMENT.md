@@ -68,6 +68,26 @@ status, never prompts or replies. Visitors share one cache: a question asked by
 one person can be served to another if it is similar enough. Do not use this
 setup for private or sensitive prompts.
 
+## Watch your Gemini quota
+
+Every real Gemini answer writes a line to the orchestrator log:
+
+```
+gemini usage: model=... prompt_tokens=12 output_tokens=85 thinking_tokens=140 total_tokens=237 | today: requests=7 tokens=1520 | requests_left=13/20 tokens_left=unlimited | resets_in=9h12m0s
+```
+
+Gemini does not report remaining quota, so `requests_left` is counted here
+against the limit you set: `GEMINI_DAILY_REQUEST_LIMIT` (free tier is about 20
+per model per day) and optionally `GEMINI_DAILY_TOKEN_BUDGET`. `LOW` is added
+when 20% or less is left. The day resets at midnight Pacific, like Google's
+quota. If Google refuses with a daily-quota 429, a `gemini quota EXHAUSTED`
+line is logged and the real limit is learned from the error. Counts are in
+memory, so they restart from zero when the orchestrator restarts.
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file production.env logs orchestrator | grep "gemini usage\|gemini quota"
+```
+
 ## Operate
 
 ```bash
