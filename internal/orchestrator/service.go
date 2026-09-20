@@ -420,6 +420,9 @@ type statsResponse struct {
 	Evictions        int     `json:"evictions"`
 	Size             int     `json:"size"`
 	Policy           string  `json:"policy"`
+
+	// LLMUsage is today's metered-LLM usage; omitted when the backend has none.
+	LLMUsage *llm.UsageSnapshot `json:"llm_usage,omitempty"`
 }
 
 func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -444,6 +447,12 @@ func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
 		avgMissLatency = float64(missLatencySum) / float64(misses) / float64(time.Millisecond)
 	}
 	size, _ := s.store.Size()
+	var usage *llm.UsageSnapshot
+	if r, ok := s.llm.(llm.UsageReporter); ok {
+		if u, ok := r.Usage(); ok {
+			usage = &u
+		}
+	}
 	log.Printf("stats requested: requests=%d hits=%d misses=%d evictions=%d size=%d policy=%s",
 		requests, hits, misses, evictions, size, s.policy.Current())
 
@@ -458,6 +467,7 @@ func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
 		Evictions:        evictions,
 		Size:             size,
 		Policy:           s.policy.Current(),
+		LLMUsage:         usage,
 	})
 }
 

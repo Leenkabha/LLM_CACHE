@@ -126,3 +126,46 @@ func (t *usageTracker) leftLocked() string {
 	}
 	return s
 }
+
+// UsageSnapshot is the day's Gemini usage as exposed on /stats. Left values
+// are nil when the matching limit is not configured (Gemini reports none).
+type UsageSnapshot struct {
+	Model           string `json:"model"`
+	Requests        int    `json:"requests"`
+	Tokens          int    `json:"tokens"`
+	RequestLimit    int    `json:"request_limit,omitempty"`
+	RequestsLeft    *int   `json:"requests_left,omitempty"`
+	TokenBudget     int    `json:"token_budget,omitempty"`
+	TokensLeft      *int   `json:"tokens_left,omitempty"`
+	Exhausted       bool   `json:"exhausted"`
+	ResetsInSeconds int    `json:"resets_in_seconds"`
+}
+
+// UsageReporter is implemented by backends that track their own usage. The
+// orchestrator type-asserts for it, so other backends need not care.
+type UsageReporter interface {
+	Usage() (UsageSnapshot, bool)
+}
+
+func (t *usageTracker) snapshot(model string) UsageSnapshot {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	resetIn := t.rollover()
+	s := UsageSnapshot{
+		Model: model, Requests: t.requests, Tokens: t.tokens,
+		RequestLimit: t.requestLimit, TokenBudget: t.tokenBudget,
+		Exhausted: t.exhausted, ResetsInSeconds: int(resetIn.Seconds()),
+	}
+	if t.requestLimit > 0 {
+		left := max(t.requestLimit-t.requests, 0)
+		if t.exhausted {
+			left = 0
+		}
+		s.RequestsLeft = &left
+	}
+	if t.tokenBudget > 0 {
+		left := max(t.tokenBudget-t.tokens, 0)
+		s.TokensLeft = &left
+	}
+	return s
+}

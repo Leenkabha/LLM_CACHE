@@ -14,6 +14,7 @@ import (
 	"github.com/leenkabha/llm_cache/internal/cachequeue"
 	"github.com/leenkabha/llm_cache/internal/config"
 	"github.com/leenkabha/llm_cache/internal/embedder"
+	"github.com/leenkabha/llm_cache/internal/llm"
 	"github.com/leenkabha/llm_cache/internal/persistence"
 	"github.com/leenkabha/llm_cache/internal/policy"
 	"github.com/leenkabha/llm_cache/internal/vectorstore"
@@ -463,5 +464,45 @@ func TestQueryUpdatesPolicyForEveryResult(t *testing.T) {
 	victim, ok := s.policy.Victim()
 	if !ok || victim != "c" {
 		t.Fatalf("LFU victim=%q, want unused entry c", victim)
+	}
+}
+
+// usageBackend is an llm.Backend that also reports usage, like the Gemini one.
+type usageBackend struct{ snap llm.UsageSnapshot }
+
+func (usageBackend) Complete(context.Context, string) (string, error) { return "ok", nil }
+func (u usageBackend) Usage() (llm.UsageSnapshot, bool)              { return u.snap, true }
+
+func statsBody(t *testing.T, s *Service) map[string]any {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stats", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/stats status=%d", rec.Code)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestStatsIncludesLLMUsageWhenBackendReportsIt(t *testing.T) {
+	s, _, _ := queryFixture(t, &fixedSearch{}, 1)
+	left := 13
+	s.llm = usageBackend{snap: llm.UsageSnapshot{Model: "m", Requests: 7, Tokens: 1520, RequestLimit: 20, RequestsLeft: &left}}
+	u, ok := statsBody(t, s)["llm_usage"].(map[string]any)
+	if !ok || u["requests"] != float64(7) || u["tokens"] != float64(1520) || u["requests_left"] != float64(13) {
+		t.Fatalf("llm_usage=%v", u)
+	}
+	if _, has := u["tokens_left"]; has {
+		t.Fatalf("tokens_left must be omitted when no token budget is set: %v", u)
+	}
+}
+
+func TestStatsOmitsLLMUsageForBackendsWithoutIt(t *testing.T) {
+	s, _, _ := queryFixture(t, &fixedSearch{}, 1)
+	if _, has := statsBody(t, s)["llm_usage"]; has {
+		t.Fatal("llm_usage must be omitted when the backend does not track usage")
 	}
 }

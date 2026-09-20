@@ -212,6 +212,16 @@ type geminiBackend struct {
 	usage   *usageTracker // optional; nil disables usage/quota logging
 }
 
+var _ UsageReporter = (*geminiBackend)(nil)
+
+// Usage reports today's Gemini usage; false when tracking is disabled.
+func (g *geminiBackend) Usage() (UsageSnapshot, bool) {
+	if g.usage == nil {
+		return UsageSnapshot{}, false
+	}
+	return g.usage.snapshot(g.model), true
+}
+
 type geminiRequest struct {
 	Contents []geminiContent `json:"contents"`
 }

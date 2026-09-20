@@ -132,3 +132,43 @@ func TestGeminiLogsQuotaExhaustionOnDailyQuota429(t *testing.T) {
 		t.Fatalf("want exactly one exhausted line with limit 20:\n%s", got)
 	}
 }
+
+func TestUsageSnapshotReportsLeftOnlyWhenLimitsSet(t *testing.T) {
+	captureLog(t)
+	tr := newUsageTracker(20, 0)
+	tr.recordSuccess("m", geminiUsage{TotalTokenCount: 30})
+	s := tr.snapshot("m")
+	if s.Requests != 1 || s.Tokens != 30 || s.RequestsLeft == nil || *s.RequestsLeft != 19 {
+		t.Fatalf("snapshot=%+v", s)
+	}
+	if s.TokensLeft != nil {
+		t.Fatalf("no token budget configured, tokens_left must be nil, got %d", *s.TokensLeft)
+	}
+	if s.ResetsInSeconds <= 0 || s.ResetsInSeconds > 24*3600 {
+		t.Fatalf("resets_in_seconds=%d", s.ResetsInSeconds)
+	}
+}
+
+func TestUsageSnapshotExhaustedForcesZeroLeft(t *testing.T) {
+	captureLog(t)
+	tr := newUsageTracker(0, 0)
+	tr.recordQuotaExhausted("m", []byte("limit: 20"))
+	s := tr.snapshot("m")
+	if !s.Exhausted || s.RequestsLeft == nil || *s.RequestsLeft != 0 || s.RequestLimit != 20 {
+		t.Fatalf("snapshot=%+v", s)
+	}
+}
+
+func TestGeminiAndFallbackExposeUsage(t *testing.T) {
+	g := newTestGemini("http://unused")
+	if _, ok := g.Usage(); ok {
+		t.Fatal("no tracker configured: Usage must report false")
+	}
+	g.usage = newUsageTracker(5, 0)
+	if _, ok := NewFallback(g, &stubBackend{}).(UsageReporter).Usage(); !ok {
+		t.Fatal("fallback must expose the primary's usage")
+	}
+	if _, ok := NewFallback(&stubBackend{}, g).(UsageReporter).Usage(); ok {
+		t.Fatal("a primary without usage must report false")
+	}
+}

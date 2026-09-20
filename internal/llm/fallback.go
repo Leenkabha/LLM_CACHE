@@ -30,6 +30,14 @@ func NewFallback(primary, fallback Backend) Backend {
 	return &fallbackBackend{primary: primary, fallback: fallback}
 }
 
+// Usage reports the primary backend's usage, since that is the metered one.
+func (b *fallbackBackend) Usage() (UsageSnapshot, bool) {
+	if r, ok := b.primary.(UsageReporter); ok {
+		return r.Usage()
+	}
+	return UsageSnapshot{}, false
+}
+
 func (b *fallbackBackend) Complete(ctx context.Context, prompt string) (string, error) {
 	reply, err := b.primary.Complete(ctx, prompt)
 	if err == nil {

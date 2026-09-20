@@ -129,6 +129,17 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
+  .usage {
+    margin-top: 22px; padding: 12px 16px; font-size: 13px; color: var(--ink-soft);
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    font-variant-numeric: tabular-nums; line-height: 1.6;
+  }
+  .usage[hidden] { display: none; }
+  .usage b { color: var(--ink); font-weight: 700; }
+  .usage .label { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 4px; }
+  .usage .warn { color: var(--error); font-weight: 700; }
+  .usage .hint { display: block; margin-top: 2px; }
+
   footer { margin-top: 40px; font-size: 12px; color: var(--ink-soft); text-align: center; }
   footer code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
 </style>
@@ -152,6 +163,8 @@
   <div id="result">
     <p class="empty">Results will appear here.</p>
   </div>
+
+  <div id="usage" class="usage" hidden></div>
 
   <footer>Talking to the orchestrator at <code id="origin"></code></footer>
 </main>
@@ -194,8 +207,43 @@
     } finally {
       submitBtn.disabled = false;
       submitBtn.textContent = 'Ask';
+      loadUsage();
     }
   });
+
+  // Today's LLM usage. Gemini does not report remaining quota, so "left" only
+  // appears when the operator configured a limit; otherwise we show what has been used.
+  const usageEl = document.getElementById('usage');
+
+  function fmtDuration(sec) {
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  }
+
+  async function loadUsage() {
+    try {
+      const res = await fetch('/stats');
+      if (!res.ok) return;
+      const u = (await res.json()).llm_usage;
+      if (!u) { usageEl.hidden = true; return; }
+
+      const n = (x) => Number(x).toLocaleString();
+      const parts = [`<span><b>${n(u.requests)}</b> LLM requests</span>`, `<span><b>${n(u.tokens)}</b> tokens used</span>`];
+      if (u.requests_left != null) parts.push(`<span><b>${n(u.requests_left)}</b> of ${n(u.request_limit)} requests left</span>`);
+      if (u.tokens_left != null) parts.push(`<span><b>${n(u.tokens_left)}</b> of ${n(u.token_budget)} tokens left</span>`);
+
+      const lines = [`<div class="label">LLM usage today · ${escapeHtml(u.model)}</div>`, parts.join(' · ')];
+      if (u.exhausted) {
+        lines.push(`<span class="warn">Daily quota used up. New questions fail until it resets in ${fmtDuration(u.resets_in_seconds)}; cached answers still work.</span>`);
+      } else {
+        lines.push(`<span class="hint">Resets in ${fmtDuration(u.resets_in_seconds)} (midnight Pacific).${
+          u.requests_left == null && u.tokens_left == null ? ' No limit is configured, so “left” is not shown.' : ''}</span>`);
+      }
+      usageEl.innerHTML = lines.join('');
+      usageEl.hidden = false;
+    } catch (_) { /* usage panel is best-effort */ }
+  }
+  loadUsage();
 
   function renderResult(data) {
     const isHit = !!data.cache_hit;

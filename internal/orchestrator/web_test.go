@@ -52,3 +52,15 @@ func TestUIRejectsNonGET(t *testing.T) {
 		t.Fatalf("POST / status=%d, want non-200 (method not allowed)", rec.Code)
 	}
 }
+
+func TestUIShowsLLMUsagePanel(t *testing.T) {
+	s, _, _ := queryFixture(t, &fixedSearch{}, 1)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+	for _, want := range []string{`id="usage"`, "fetch('/stats')", "tokens used"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("UI missing %q", want)
+		}
+	}
+}
