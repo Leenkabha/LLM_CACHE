@@ -1,0 +1,142 @@
+<!doctype html><meta charset="utf-8"><title>Benchmark evidence</title><style>body{font:18px monospace;background:#102b3b;color:#e7f3ef;padding:40px}pre{white-space:pre-wrap}</style><h1>Measured benchmark evidence</h1><pre>{
+  &quot;started_utc&quot;: &quot;2026-09-20T20:48:50.106346+00:00&quot;,
+  &quot;workload&quot;: {
+    &quot;description&quot;: &quot;Authored demonstration workload, NOT instructor traces. Four topics, each with one paraphrase and one exact repeat. Results apply only to this small repeated workload.&quot;,
+    &quot;queries&quot;: [
+      {
+        &quot;id&quot;: &quot;vm-1&quot;,
+        &quot;group&quot;: &quot;virtual-memory&quot;,
+        &quot;kind&quot;: &quot;new&quot;,
+        &quot;prompt&quot;: &quot;What is virtual memory? Answer in one short sentence.&quot;
+      },
+      {
+        &quot;id&quot;: &quot;dns-1&quot;,
+        &quot;group&quot;: &quot;dns&quot;,
+        &quot;kind&quot;: &quot;new&quot;,
+        &quot;prompt&quot;: &quot;What does DNS do? Answer in one short sentence.&quot;
+      },
+      {
+        &quot;id&quot;: &quot;lru-1&quot;,
+        &quot;group&quot;: &quot;lru&quot;,
+        &quot;kind&quot;: &quot;new&quot;,
+        &quot;prompt&quot;: &quot;How does LRU cache eviction work? Answer in one short sentence.&quot;
+      },
+      {
+        &quot;id&quot;: &quot;tcp-1&quot;,
+        &quot;group&quot;: &quot;tcp&quot;,
+        &quot;kind&quot;: &quot;new&quot;,
+        &quot;prompt&quot;: &quot;What is the purpose of TCP? Answer in one short sentence.&quot;
+      },
+      {
+        &quot;id&quot;: &quot;vm-2&quot;,
+        &quot;group&quot;: &quot;virtual-memory&quot;,
+        &quot;kind&quot;: &quot;paraphrase&quot;,
+        &quot;prompt&quot;: &quot;Can you explain what virtual memory is? Answer in one short sentence.&quot;
+      },
+      {
+        &quot;id&quot;: &quot;dns-2&quot;,
+        &quot;group&quot;: &quot;dns&quot;,
+        &quot;kind&quot;: &quot;paraphrase&quot;,
+        &quot;prompt&quot;: &quot;What is the role of the Domain Name System? Answer in one short sentence.&quot;
+      },
+      {
+        &quot;id&quot;: &quot;lru-2&quot;,
+        &quot;group&quot;: &quot;lru&quot;,
+        &quot;kind&quot;: &quot;paraphrase&quot;,
+        &quot;prompt&quot;: &quot;Which entry does a least recently used cache evict? Answer in one short sentence.&quot;
+      },
+      {
+        &quot;id&quot;: &quot;tcp-2&quot;,
+        &quot;group&quot;: &quot;tcp&quot;,
+        &quot;kind&quot;: &quot;paraphrase&quot;,
+        &quot;prompt&quot;: &quot;What does the Transmission Control Protocol provide? Answer in one short sentence.&quot;
+      },
+      {
+        &quot;id&quot;: &quot;vm-3&quot;,
+        &quot;group&quot;: &quot;virtual-memory&quot;,
+        &quot;kind&quot;: &quot;repeat&quot;,
+        &quot;prompt&quot;: &quot;What is virtual memory? Answer in one short sentence.&quot;
+      },
+      {
+        &quot;id&quot;: &quot;dns-3&quot;,
+        &quot;group&quot;: &quot;dns&quot;,
+        &quot;kind&quot;: &quot;repeat&quot;,
+        &quot;prompt&quot;: &quot;What does DNS do? Answer in one short sentence.&quot;
+      },
+      {
+        &quot;id&quot;: &quot;lru-3&quot;,
+        &quot;group&quot;: &quot;lru&quot;,
+        &quot;kind&quot;: &quot;repeat&quot;,
+        &quot;prompt&quot;: &quot;How does LRU cache eviction work? Answer in one short sentence.&quot;
+      },
+      {
+        &quot;id&quot;: &quot;tcp-3&quot;,
+        &quot;group&quot;: &quot;tcp&quot;,
+        &quot;kind&quot;: &quot;repeat&quot;,
+        &quot;prompt&quot;: &quot;What is the purpose of TCP? Answer in one short sentence.&quot;
+      }
+    ]
+  },
+  &quot;trials&quot;: 1,
+  &quot;workload_sha256&quot;: &quot;4a545b5030c87fb9b38653e9344dd5bd6ec83856468fdb7d42848ce58c53da1d&quot;,
+  &quot;method&quot;: &quot;Sequential HTTP requests. Identical order in both arms. Empty cache at each trial start. Alternating arm order. Async settlement waits excluded from response latency but recorded separately.&quot;,
+  &quot;limitations&quot;: &quot;Successful logical LLM completions, not provider retries, tokens or billed cost. Small authored workload unless replaced. Response quality needs manual review.&quot;,
+  &quot;source_commit&quot;: &quot;f9e195d322267a1f58557ba634a249c18df9a722&quot;,
+  &quot;source_dirty&quot;: false,
+  &quot;cache_settings&quot;: {
+    &quot;threshold&quot;: 0.25,
+    &quot;top_k&quot;: 1,
+    &quot;capacity&quot;: 1000,
+    &quot;policy&quot;: &quot;lru&quot;,
+    &quot;embedding&quot;: &quot;all-MiniLM-L6-v2&quot;,
+    &quot;metric&quot;: &quot;cosine&quot;,
+    &quot;origin&quot;: &quot;supplied compose.yml; do not override without updating this record&quot;
+  },
+  &quot;baseline_health&quot;: {
+    &quot;completion_calls&quot;: 0,
+    &quot;failed_calls&quot;: 0,
+    &quot;fallback&quot;: false,
+    &quot;mode&quot;: &quot;no-cache&quot;,
+    &quot;model&quot;: &quot;gemini-3.1-flash-lite&quot;,
+    &quot;provider&quot;: &quot;gemini&quot;,
+    &quot;status&quot;: &quot;ok&quot;
+  },
+  &quot;cache_health&quot;: {
+    &quot;checks&quot;: {
+      &quot;embedding&quot;: &quot;ok&quot;,
+      &quot;redis&quot;: &quot;ok&quot;,
+      &quot;vectorstore&quot;: &quot;ok&quot;
+    },
+    &quot;status&quot;: &quot;ok&quot;
+  },
+  &quot;warmup_calls&quot;: 2,
+  &quot;status&quot;: &quot;incomplete&quot;,
+  &quot;error&quot;: &quot;Run stopped after request failure; partial data retained, no savings claim.&quot;,
+  &quot;ended_utc&quot;: &quot;2026-09-20T20:49:41.818082+00:00&quot;,
+  &quot;summary&quot;: {
+    &quot;no-cache&quot;: {
+      &quot;requests&quot;: 12,
+      &quot;successes&quot;: 12,
+      &quot;errors&quot;: 0,
+      &quot;hits&quot;: 0,
+      &quot;successful_llm_completions&quot;: 12,
+      &quot;sum_response_ms&quot;: 31886.83079800103,
+      &quot;mean_ms&quot;: 2657.235899833419,
+      &quot;median_ms&quot;: 2322.7266500016412,
+      &quot;p95_ms&quot;: 4784.244684397343,
+      &quot;hit_rate&quot;: 0.0
+    },
+    &quot;cache&quot;: {
+      &quot;requests&quot;: 3,
+      &quot;successes&quot;: 2,
+      &quot;errors&quot;: 1,
+      &quot;hits&quot;: 0,
+      &quot;successful_llm_completions&quot;: 2,
+      &quot;sum_response_ms&quot;: 6162.704530001065,
+      &quot;mean_ms&quot;: 3081.3522650005325,
+      &quot;median_ms&quot;: 3081.3522650005325,
+      &quot;p95_ms&quot;: 3144.9948928993763,
+      &quot;hit_rate&quot;: 0.0
+    }
+  }
+}</pre>
