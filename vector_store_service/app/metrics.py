@@ -116,6 +116,12 @@ def _build_euclidean() -> SimilarityMetric:
     return EuclideanMetric()
 
 
+def registered() -> list[str]:
+    """Names of every registered similarity metric (for runner introspection)."""
+    load_plugins()
+    return sorted(_REGISTRY)
+
+
 def create_from_env() -> SimilarityMetric:
     """Build the similarity metric selected by SIMILARITY_METRIC (default cosine).
 

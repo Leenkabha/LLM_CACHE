@@ -1,0 +1,36 @@
+apiVersion: llmcache.dev/v1alpha1
+kind: Plugin
+
+metadata:
+  name: sdk-hash-embedder
+  version: 1.0.0
+  description: Deterministic hashing embedder (a demo, not a semantic model)
+
+spec:
+  type: embedder
+
+  runtime:
+    mode: container
+    dockerfile: Dockerfile
+    port: 8080
+
+  health:
+    path: /health
+    timeout: 5s
+
+  config:
+    properties:
+      dim:
+        type: integer
+        default: 384
+        min: 2
+        max: 4096
+        description: "vector dimension; must match the vector store"
+      model_name:
+        type: string
+        default: sdk-hash-embedder
+        description: "base of the reported model name"
+
+  resources:
+    cpu: 250m
+    memory: 128Mi

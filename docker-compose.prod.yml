@@ -69,12 +69,66 @@ services:
       # Safe here: the orchestrator is only reachable through Caddy.
       TRUST_PROXY: "true"
       LOG_FILE: "logs/orchestrator.log"
+      # Plugin platform: off unless enabled in production.env (see docs/PLUGIN_OPERATIONS.md).
+      # It requires ADMIN_TOKEN (already required above) and PLUGIN_SECRET_KEY.
+      ENABLE_PLUGIN_INSTALLATION: "${ENABLE_PLUGIN_INSTALLATION:-false}"
+      PLUGIN_SECRET_KEY: "${PLUGIN_SECRET_KEY:-}"
+      ALLOW_INSECURE_PLUGIN_ENDPOINTS: "false"
+      PLUGIN_CONTROLLER_URL: "${PLUGIN_CONTROLLER_URL:-}"
+      PLUGIN_CONTROLLER_TOKEN: "${PLUGIN_CONTROLLER_TOKEN:-}"
+      PLUGIN_BUILD_TIMEOUT: "${PLUGIN_BUILD_TIMEOUT:-}"
+      PLUGIN_HEALTH_TIMEOUT: "${PLUGIN_HEALTH_TIMEOUT:-}"
+      PLUGIN_CPU_LIMIT: "${PLUGIN_CPU_LIMIT:-}"
+      PLUGIN_MEMORY_LIMIT: "${PLUGIN_MEMORY_LIMIT:-}"
     volumes:
       - ./logs:/app/logs
     depends_on:
       - embedding
       - vectorstore
       - redis
+
+  # ---- Optional: image/repository plugin installation (--profile plugins) --------
+  # Needs a Docker daemon the controller may use. That is root-equivalent access to
+  # its host: run it on a dedicated build/plugin host or use rootless Docker, and
+  # read docs/PLUGIN_SECURITY.md first. Nothing here is published to the internet.
+  docker-socket-proxy:
+    profiles: [plugins]
+    image: tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+    environment:
+      CONTAINERS: "1"
+      IMAGES: "1"
+      NETWORKS: "1"
+      BUILD: "1"
+      POST: "1"
+      INFO: "1"
+      VERSION: "1"
+      PING: "1"
+      EXEC: "0"
+      VOLUMES: "0"
+      SECRETS: "0"
+      SWARM: "0"
+      SYSTEM: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  plugin-controller:
+    profiles: [plugins]
+    build:
+      context: .
+      dockerfile: deploy/controller.Dockerfile
+    restart: unless-stopped
+    environment:
+      DOCKER_HOST: "tcp://docker-socket-proxy:2375"
+      PLUGIN_CONTROLLER_TOKEN: "${PLUGIN_CONTROLLER_TOKEN:-}"   # required (16+ chars) when the plugins profile is used; the controller refuses to start without it
+      PLUGIN_CPU_LIMIT: "${PLUGIN_CPU_LIMIT:-1}"
+      PLUGIN_MEMORY_LIMIT: "${PLUGIN_MEMORY_LIMIT:-512Mi}"
+      PLUGIN_BUILD_TIMEOUT: "${PLUGIN_BUILD_TIMEOUT:-10m}"
+      PLUGIN_HEALTH_TIMEOUT: "${PLUGIN_HEALTH_TIMEOUT:-60s}"
+      PLUGIN_SCANNER: "${PLUGIN_SCANNER:-none}"
+      PLUGIN_REQUIRE_SCAN: "${PLUGIN_REQUIRE_SCAN:-false}"
+    depends_on:
+      - docker-socket-proxy
 
 volumes:
   redis_data:

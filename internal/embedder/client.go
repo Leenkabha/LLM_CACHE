@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -29,6 +30,20 @@ type Embedder interface {
 	Embed(ctx context.Context, text string) ([]float64, error)
 	// Health reports whether the underlying embedding backend is reachable.
 	Health(ctx context.Context) error
+}
+
+// ModelInfo identifies the model behind an embedder. Two embedders with the same
+// Name and Dim are treated as producing the same vector space.
+type ModelInfo struct {
+	Name string `json:"name"`
+	Dim  int    `json:"dim"`
+}
+
+// ModelInfoProvider is optionally implemented by embedders that can report
+// their model identity. Changing the model invalidates every stored vector, so
+// the plugin platform compares identities before switching embedders.
+type ModelInfoProvider interface {
+	ModelInfo(ctx context.Context) (ModelInfo, error)
 }
 
 // Backend names the built-in embedder adapters selectable via configuration.
@@ -114,6 +129,27 @@ func (c *httpEmbedder) Embed(ctx context.Context, text string) ([]float64, error
 		return nil, err
 	}
 	return out.Vector, nil
+}
+
+// ModelInfo asks the embedding service which model it is running (GET /model-info).
+func (c *httpEmbedder) ModelInfo(ctx context.Context) (ModelInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/model-info", nil)
+	if err != nil {
+		return ModelInfo{}, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return ModelInfo{}, fmt.Errorf("embedding service unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ModelInfo{}, fmt.Errorf("embedding service returned %d", resp.StatusCode)
+	}
+	var out ModelInfo
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&out); err != nil {
+		return ModelInfo{}, err
+	}
+	return out, nil
 }
 
 func (c *httpEmbedder) Health(ctx context.Context) error {

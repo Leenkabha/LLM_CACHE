@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -56,6 +57,19 @@ type VectorStore interface {
 	Rebuild(ctx context.Context, entries []RebuildEntry) (int, error)
 	// Health reports whether the underlying vector store is reachable.
 	Health(ctx context.Context) error
+}
+
+// Info describes a vector store's configuration where it can report it.
+type Info struct {
+	Dim    int    `json:"dim"`
+	Metric string `json:"metric,omitempty"`
+}
+
+// InfoProvider is optionally implemented by vector stores that can report the
+// vector dimension they accept. The plugin platform uses it to refuse an
+// embedder whose vectors the store cannot hold.
+type InfoProvider interface {
+	Info(ctx context.Context) (Info, error)
 }
 
 // Backend names the built-in vector-store adapters selectable via configuration.
@@ -215,6 +229,35 @@ func (c *httpVectorStore) Health(ctx context.Context) error {
 		return fmt.Errorf("vector store returned %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// Info reads the store's dimension and metric from GET /v1/info, falling back to
+// optional extra fields of GET /health for stores that report them there.
+func (c *httpVectorStore) Info(ctx context.Context) (Info, error) {
+	if info, err := c.getInfo(ctx, "/v1/info"); err == nil && info.Dim > 0 {
+		return info, nil
+	}
+	return c.getInfo(ctx, "/health")
+}
+
+func (c *httpVectorStore) getInfo(ctx context.Context, path string) (Info, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return Info{}, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return Info{}, fmt.Errorf("vector store unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return Info{}, fmt.Errorf("vector store returned %d", resp.StatusCode)
+	}
+	var out Info
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&out); err != nil {
+		return Info{}, err
+	}
+	return out, nil
 }
 
 type rebuildRequest struct {

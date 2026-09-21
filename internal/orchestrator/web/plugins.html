@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plugins - LLM Semantic Cache</title>
+<style>
+  :root {
+    --ink: #14181f; --ink-soft: #55606b; --paper: #f6f7f5; --surface: #ffffff; --line: #d5dade;
+    --accent: #2f5a78; --accent-ink: #ffffff; --accent-soft: #e4edf1;
+    --ok: #276b4d; --ok-bg: #e2f0e7; --warn: #8a5a0a; --warn-bg: #f7ecd9; --bad: #a13d2e; --bad-bg: #f7e2dd;
+    --busy: #34527a; --busy-bg: #e3eaf6; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --shadow: 0 1px 2px rgba(20,24,31,.06), 0 8px 24px rgba(20,24,31,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink: #e8ecef; --ink-soft: #9aa4ad; --paper: #14171c; --surface: #1b1f26; --line: #333a45;
+      --accent: #7fb2d6; --accent-ink: #10202b; --accent-soft: #1e2d36;
+      --ok: #7fceac; --ok-bg: #16241d; --warn: #e3b568; --warn-bg: #2a2216; --bad: #e6907c; --bad-bg: #2c1c18;
+      --busy: #9db8e6; --busy-bg: #1b2434; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 28px rgba(0,0,0,.35);
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.5 -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 28px 16px 72px; }
+  a { color: var(--accent); }
+  h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -.01em; }
+  h2 { font-size: 17px; margin: 32px 0 12px; }
+  h3 { font-size: 15px; margin: 0; }
+  p.lede { margin: 0 0 18px; color: var(--ink-soft); max-width: 70ch; }
+  .eyebrow { font-size: 11.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); margin: 0 0 6px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; box-shadow: var(--shadow); }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+  .comp .type { font-family: var(--mono); font-size: 12.5px; color: var(--ink-soft); }
+  .comp .impl { margin-top: 8px; font-weight: 700; word-break: break-word; }
+  .comp .sub { font-size: 12.5px; color: var(--ink-soft); }
+  button, .btn { font: inherit; font-size: 13.5px; font-weight: 650; border-radius: 8px; padding: 8px 14px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; min-height: 36px; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+  button:disabled { opacity: .55; cursor: default; }
+  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .spread { justify-content: space-between; }
+  .pill { display: inline-block; font-size: 11.5px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+  .pill.ok { background: var(--ok-bg); color: var(--ok); } .pill.warn { background: var(--warn-bg); color: var(--warn); }
+  .pill.bad { background: var(--bad-bg); color: var(--bad); } .pill.busy { background: var(--busy-bg); color: var(--busy); }
+  .pill.idle { background: var(--accent-soft); color: var(--accent); }
+  .muted { color: var(--ink-soft); font-size: 13px; }
+  .mono { font-family: var(--mono); font-size: 12.5px; word-break: break-all; }
+  label { display: block; font-weight: 650; font-size: 13.5px; margin: 12px 0 4px; }
+  .help { font-size: 12.5px; color: var(--ink-soft); margin: 3px 0 0; }
+  input[type=text], input[type=url], input[type=password], input[type=number], select, textarea {
+    width: 100%; font: inherit; font-size: 14px; padding: 8px 10px; color: var(--ink); background: var(--paper);
+    border: 1px solid var(--line); border-radius: 8px; }
+  textarea { font-family: var(--mono); font-size: 12.5px; min-height: 120px; resize: vertical; }
+  .req::after { content: " *"; color: var(--bad); }
+  fieldset { border: 1px solid var(--line); border-radius: 10px; margin: 14px 0 0; padding: 4px 14px 14px; }
+  legend { font-weight: 700; font-size: 13px; padding: 0 6px; }
+  .plugin { display: grid; gap: 10px; }
+  .plugin + .plugin { margin-top: 12px; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; font-size: 13px; }
+  .kv dt { color: var(--ink-soft); } .kv dd { margin: 0; word-break: break-word; }
+  .notice { border-radius: 10px; padding: 10px 14px; font-size: 14px; margin: 12px 0; }
+  .notice.bad { background: var(--bad-bg); color: var(--bad); } .notice.ok { background: var(--ok-bg); color: var(--ok); }
+  .notice.warn { background: var(--warn-bg); color: var(--warn); } .notice.info { background: var(--accent-soft); color: var(--ink); }
+  ul.checks { list-style: none; margin: 8px 0 0; padding: 0; font-size: 13px; }
+  ul.checks li { padding: 2px 0; } ul.checks .p { color: var(--ok); } ul.checks .f { color: var(--bad); font-weight: 700; } ul.checks .s { color: var(--ink-soft); }
+  pre.log { background: #0f1317; color: #d7e0e6; padding: 12px; border-radius: 8px; font: 12px/1.5 var(--mono); max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 0; }
+  dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--ink); padding: 0; width: min(680px, calc(100vw - 24px)); max-height: calc(100vh - 24px); box-shadow: var(--shadow); }
+  dialog::backdrop { background: rgba(10,14,20,.55); }
+  dialog .body { padding: 18px 20px; overflow: auto; max-height: calc(100vh - 150px); }
+  dialog .head, dialog .foot { padding: 14px 20px; display: flex; gap: 8px; align-items: center; }
+  dialog .head { justify-content: space-between; border-bottom: 1px solid var(--line); }
+  dialog .foot { justify-content: flex-end; border-top: 1px solid var(--line); flex-wrap: wrap; }
+  .seg { display: flex; gap: 8px; flex-wrap: wrap; }
+  .seg label { display: flex; gap: 6px; align-items: center; margin: 0; font-weight: 600; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+  .seg input { width: auto; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  #login { max-width: 460px; margin: 10vh auto 0; }
+  [hidden] { display: none !important; }
+  @media (max-width: 560px) { .wrap { padding: 18px 12px 60px; } .kv { grid-template-columns: 1fr; } dialog .foot button { flex: 1 1 auto; } }
+  @media (prefers-reduced-motion: no-preference) { .pill.busy { animation: pulse 1.6s ease-in-out infinite; } @keyframes pulse { 50% { opacity: .6; } } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="eyebrow"><a href="/" style="text-decoration:none">LLM Semantic Cache</a></p>
+  <h1>Plugins</h1>
+  <p class="lede">Add a custom LLM, embedder, vector store, persistence layer, queue, eviction policy, or Python embedding model, index or similarity metric. Every plugin is verified against its contract and health-checked before it is activated, and the previous one stays in place if anything fails.</p>
+
+  <div id="status" class="sr" role="status" aria-live="polite"></div>
+
+  <section id="login" class="card" aria-labelledby="login-h">
+    <h2 id="login-h" style="margin-top:0">Administrator sign-in</h2>
+    <p class="muted">Enter the <code>ADMIN_TOKEN</code>. It is kept only in this page's memory: it is never saved, and reloading the page signs you out.</p>
+    <form id="login-form" autocomplete="off">
+      <label for="token" class="req">Admin token</label>
+      <input id="token" type="password" autocomplete="off" spellcheck="false" required>
+      <div class="row" style="margin-top:14px"><button class="primary" type="submit">Sign in</button></div>
+    </form>
+    <div id="login-msg" role="alert"></div>
+  </section>
+
+  <main id="app" hidden>
+    <div id="banner"></div>
+    <div class="row spread">
+      <h2 style="margin:0">Components</h2>
+      <button class="primary" id="add-btn" type="button">Add plugin</button>
+    </div>
+    <div id="components" class="grid" style="margin-top:12px" aria-label="Components and their active implementation"></div>
+
+    <h2>Installed plugins</h2>
+    <div id="plugins"></div>
+
+    <h2>Recent activity</h2>
+    <div class="card"><ul id="audit" class="checks"></ul></div>
+  </main>
+</div>
+
+<!-- Add / upgrade dialog -->
+<dialog id="add-dlg" aria-labelledby="add-title">
+  <form id="add-form" method="dialog" autocomplete="off" novalidate>
+    <div class="head"><h3 id="add-title">Add plugin</h3><button type="button" id="add-close" aria-label="Close">Close</button></div>
+    <div class="body">
+      <div id="add-source">
+        <label for="f-type" class="req">Component type</label>
+        <select id="f-type"></select>
+        <p class="help" id="f-type-help"></p>
+
+        <fieldset><legend>Where is the plugin?</legend>
+          <div class="seg" role="radiogroup" aria-label="Source">
+            <label><input type="radio" name="mode" value="endpoint" checked> Hosted endpoint</label>
+            <label><input type="radio" name="mode" value="image"> Prebuilt image</label>
+            <label><input type="radio" name="mode" value="repository"> GitHub repository</label>
+          </div>
+          <div data-mode="endpoint">
+            <label for="f-endpoint" class="req">Endpoint URL</label>
+            <input id="f-endpoint" type="url" placeholder="https://plugin.example.com" spellcheck="false">
+            <p class="help">Must be https and a public address. No credentials or query string in the URL: enter a token below instead.</p>
+            <label for="f-name">Name</label>
+            <input id="f-name" type="text" placeholder="my-plugin" spellcheck="false">
+            <p class="help">Lowercase letters, digits and dashes. Used when you do not paste a plugin.yaml.</p>
+            <label for="f-token">Endpoint token (optional)</label>
+            <input id="f-token" type="password" autocomplete="new-password" spellcheck="false">
+            <p class="help">Sent as <code>Authorization: Bearer</code> to your endpoint. Stored encrypted and never shown again.</p>
+          </div>
+          <div data-mode="image" hidden>
+            <label for="f-image" class="req">Image reference</label>
+            <input id="f-image" type="text" placeholder="ghcr.io/acme/my-plugin:1.0.0" spellcheck="false">
+            <p class="help">The image is pulled, pinned to its immutable digest, scanned, then started isolated. This needs the plugin controller.</p>
+          </div>
+          <div data-mode="repository" hidden>
+            <label for="f-repo" class="req">GitHub repository</label>
+            <input id="f-repo" type="url" placeholder="https://github.com/acme/my-plugin" spellcheck="false">
+            <label for="f-rev">Revision</label>
+            <input id="f-rev" type="text" placeholder="main, a tag, or a commit SHA" spellcheck="false">
+            <p class="help">The exact commit is resolved and recorded. The repository must contain <code>plugin.yaml</code> at its root. This needs the plugin controller.</p>
+          </div>
+          <div data-mode="endpoint image">
+            <details style="margin-top:12px"><summary>Paste a plugin.yaml (optional)</summary>
+              <label for="f-manifest" class="sr">plugin.yaml</label>
+              <textarea id="f-manifest" spellcheck="false" placeholder="apiVersion: llmcache.dev/v1alpha1&#10;kind: Plugin&#10;..."></textarea>
+              <p class="help">Images without a <code>/plugin.yaml</code> and endpoints that need configuration or declare a version should supply one.</p>
+            </details>
+          </div>
+        </fieldset>
+        <div class="row" style="margin-top:14px"><button type="button" id="verify-btn" class="primary">Verify</button><span class="muted" id="verify-hint"></span></div>
+      </div>
+
+      <div id="verify-out" hidden></div>
+      <div id="config-out" hidden></div>
+      <div id="add-msg" role="alert"></div>
+    </div>
+    <div class="foot">
+      <button type="button" id="add-cancel">Cancel</button>
+      <button type="button" id="install-btn" class="primary" hidden>Verify &amp; Activate</button>
+      <button type="button" id="install-only-btn" hidden>Install without activating</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Confirmation dialog for activation requirements -->
+<dialog id="confirm-dlg" aria-labelledby="confirm-title">
+  <form method="dialog" id="confirm-form" autocomplete="off">
+    <div class="head"><h3 id="confirm-title">Confirmation needed</h3></div>
+    <div class="body" id="confirm-body"></div>
+    <div class="foot"><button type="button" id="confirm-cancel">Cancel</button><button type="button" id="confirm-ok" class="primary">Confirm and continue</button></div>
+  </form>
+</dialog>
+
+<!-- Logs dialog -->
+<dialog id="log-dlg" aria-labelledby="log-title">
+  <div class="head"><h3 id="log-title">Logs</h3><button type="button" id="log-close">Close</button></div>
+  <div class="body"><p class="muted">Sanitized: secrets and credentials are removed before logs are stored.</p><pre class="log" id="log-pre" tabindex="0"></pre></div>
+</dialog>
+
+<script>
+(() => {
+  'use strict';
+  // ---- state: everything lives in memory only --------------------------------------
+  let token = '';                // the admin token: never written to storage, cookies or URLs
+  let data = { plugins: [], components: [], settings: {}, active: {} };
+  let verifyResult = null;       // last successful verify (for the config form)
+  let upgradeOf = null;          // plugin id when the add dialog is used for an upgrade
+  let pollTimer = null;
+  const $ = (id) => document.getElementById(id);
+
+  const STATE_LABEL = {
+    draft: 'Draft', validating_manifest: 'Validating manifest', testing_contract: 'Testing contract', building: 'Building',
+    scanning: 'Scanning', starting_candidate: 'Starting candidate', migrating: 'Migrating or rebuilding',
+    checking_health: 'Checking health', activating: 'Activating', verified: 'Verified', active: 'Active',
+    inactive: 'Inactive', failed: 'Failed', rolling_back: 'Rolling back', rolled_back: 'Rolled back',
+  };
+  const BUSY = new Set(['draft', 'validating_manifest', 'testing_contract', 'building', 'scanning', 'starting_candidate', 'migrating', 'checking_health', 'activating', 'rolling_back']);
+  const TYPE_HELP = {
+    'llm': 'Answers a prompt on a cache miss.', 'embedder': 'Turns text into a vector.', 'vector-store': 'Stores vectors and finds the nearest.',
+    'persistence': 'Stores cache entries (the source of truth).', 'queue': 'Carries cache updates to the worker.', 'policy': 'Chooses which entry to evict.',
+    'embedding-model': 'Python EmbeddingModel, built into a runner image (needs a GitHub repository or prebuilt runner image).',
+    'vector-index': 'Python VectorIndex, built into a runner image.', 'similarity-metric': 'Python SimilarityMetric, runs inside a vector runner.',
+  };
+
+  // ---- safe DOM helpers: nothing from the API is ever parsed as HTML ------------------
+  function h(tag, attrs, ...kids) {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (v === false || v == null) continue;
+      if (k === 'class') el.className = v;
+      else if (k === 'text') el.textContent = v;
+      else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+      else el.setAttribute(k, v === true ? '' : String(v));
+    }
+    for (const kid of kids.flat()) {
+      if (kid == null || kid === false) continue;
+      el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+    }
+    return el;
+  }
+  const clear = (el) => { while (el.firstChild) el.removeChild(el.firstChild); return el; };
+  const say = (msg) => { $('status').textContent = msg; };
+  const notice = (kind, msg) => h('div', { class: 'notice ' + kind, role: kind === 'bad' ? 'alert' : 'status' }, msg);
+  const fmtTime = (s) => { const d = new Date(s); return isNaN(d) ? '' : d.toLocaleString(); };
+
+  // ---- API -------------------------------------------------------------------------------
+  async function api(method, path, body) {
+    const opts = { method, headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/json' }, cache: 'no-store', credentials: 'omit' };
+    if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+    const res = await fetch(path, opts);
+    let json = {};
+    try { json = await res.json(); } catch (_) { /* empty body */ }
+    if (!res.ok) { const e = new Error(json.error || ('HTTP ' + res.status)); e.status = res.status; e.body = json; throw e; }
+    return json;
+  }
+
+  // ---- sign-in -----------------------------------------------------------------------------
+  $('login-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    token = $('token').value.trim();
+    $('token').value = '';
+    clear($('login-msg'));
+    try {
+      await refresh();
+      $('login').hidden = true; $('app').hidden = false;
+      say('Signed in');
+      schedule();
+    } catch (err) {
+      token = '';
+      $('login-msg').append(notice('bad', err.status === 401 ? 'That token was not accepted.' :
+        err.status === 503 ? 'Plugin management is disabled on this server. An administrator must set ADMIN_TOKEN, PLUGIN_SECRET_KEY and ENABLE_PLUGIN_INSTALLATION=true.' :
+        'Could not reach the server: ' + err.message));
+    }
+  });
+
+  // ---- rendering ---------------------------------------------------------------------------
+  async function refresh() {
+    data = await api('GET', '/admin/plugins');
+    render();
+    loadAudit();
+  }
+
+  function stateClass(st) {
+    if (st === 'active' || st === 'verified') return 'ok';
+    if (st === 'failed') return 'bad';
+    if (BUSY.has(st)) return 'busy';
+    if (st === 'rolled_back') return 'warn';
+    return 'idle';
+  }
+
+  function render() {
+    const s = data.settings || {};
+    const b = clear($('banner'));
+    if (!s.controller_configured) {
+      b.append(notice('info', 'Hosted endpoints work now. Installing an image or a GitHub repository (and every Python plugin type) needs the plugin controller, which is not configured on this server.'));
+    }
+    if (s.allow_insecure_endpoints) {
+      b.append(notice('warn', 'Development mode: plain http, loopback and private endpoint addresses are allowed (ALLOW_INSECURE_PLUGIN_ENDPOINTS). Do not use this in production.'));
+    }
+    const comps = clear($('components'));
+    for (const c of data.components || []) {
+      comps.append(h('div', { class: 'card comp' },
+        h('div', { class: 'type', text: c.type + (c.python ? ' (python)' : '') }),
+        h('div', { class: 'impl', text: c.active_id ? c.active_name + ' ' + c.active_version : 'Built-in: ' + (c.builtin || 'default') }),
+        h('div', { class: 'sub' }, c.active_id ? h('span', { class: 'pill ok', text: 'plugin active' }) : h('span', { class: 'pill idle', text: 'built-in' }))));
+    }
+    const list = clear($('plugins'));
+    if (!(data.plugins || []).length) {
+      list.append(h('div', { class: 'card muted', text: 'No plugins installed yet. Use "Add plugin" to install one.' }));
+    }
+    for (const p of data.plugins || []) list.append(pluginCard(p));
+  }
+
+  function pluginCard(p) {
+    const busy = BUSY.has(p.state);
+    const canActivate = !p.active && (p.state === 'verified' || p.state === 'inactive' || p.state === 'rolled_back' ||
+      (p.state === 'failed' && p.verification && p.verification.passed));
+    const acts = [];
+    if (canActivate) acts.push(h('button', { class: 'primary', type: 'button', onclick: () => activate(p) }, 'Activate'));
+    if (p.active) {
+      acts.push(h('button', { type: 'button', onclick: () => deactivate(p) }, 'Deactivate'));
+      acts.push(h('button', { type: 'button', onclick: () => rollback(p) }, 'Roll back'));
+    }
+    if (!busy) acts.push(h('button', { type: 'button', onclick: () => openAdd(p) }, 'Upgrade'));
+    acts.push(h('button', { type: 'button', onclick: () => showLogs(p) }, 'Logs'));
+    if (!p.active && !busy) acts.push(h('button', { class: 'danger', type: 'button', onclick: () => remove(p) }, 'Delete'));
+
+    const src = p.source || {};
+    const where = src.endpoint_url || src.image_ref || (src.repo_url ? src.repo_url + (src.revision ? ' @ ' + src.revision : '') : '');
+    const kv = h('dl', { class: 'kv' },
+      h('dt', { text: 'Type' }), h('dd', { text: p.type + (p.slot !== p.type ? ' (serves ' + p.slot + ')' : '') }),
+      h('dt', { text: 'Source' }), h('dd', { text: p.mode + (where ? ': ' + where : '') }),
+      p.commit ? [h('dt', { text: 'Commit' }), h('dd', { class: 'mono', text: p.commit })] : null,
+      p.image_digest ? [h('dt', { text: 'Image digest' }), h('dd', { class: 'mono', text: p.image_digest })] : null,
+      p.scan ? [h('dt', { text: 'Scan' }), h('dd', { text: p.scan.status + (p.scan.message ? ' - ' + p.scan.message : '') })] : null,
+      h('dt', { text: 'Health' }), h('dd', { text: p.health.status + (p.health.message ? ' - ' + p.health.message : '') + (p.health.checked_at ? ' (' + fmtTime(p.health.checked_at) + ')' : '') }),
+      (p.secrets || []).length ? [h('dt', { text: 'Secrets' }), h('dd', { text: p.secrets.map((s) => s.name + (s.configured ? ' (set)' : ' (not set)')).join(', ') })] : null,
+      p.previous_active_id ? [h('dt', { text: 'Roll back to' }), h('dd', { class: 'mono', text: p.previous_active_id })] : null,
+      h('dt', { text: 'Updated' }), h('dd', { text: fmtTime(p.updated_at) }));
+
+    const checks = p.verification ? h('details', {}, h('summary', { text: 'Contract tests: ' + p.verification.summary }),
+      h('ul', { class: 'checks' }, (p.verification.checks || []).map((c) =>
+        h('li', { class: c.status === 'pass' ? 'p' : c.status === 'fail' ? 'f' : 's' }, (c.status === 'pass' ? 'PASS ' : c.status === 'fail' ? 'FAIL ' : 'skip ') + c.name + (c.detail ? ' - ' + c.detail : ''))))) : null;
+
+    return h('article', { class: 'card plugin', 'aria-label': p.name },
+      h('div', { class: 'row spread' },
+        h('div', {}, h('h3', { text: p.name + ' ' + p.version }), h('div', { class: 'muted mono', text: p.id })),
+        h('div', { class: 'row' },
+          p.active ? h('span', { class: 'pill ok', text: 'Active' }) : null,
+          h('span', { class: 'pill ' + stateClass(p.state), text: STATE_LABEL[p.state] || p.state }))),
+      p.state_detail ? notice(p.state === 'failed' ? 'bad' : 'info', p.state_detail) : null,
+      p.description ? h('div', { class: 'muted', text: p.description }) : null,
+      kv, checks, h('div', { class: 'row' }, acts));
+  }
+
+  async function loadAudit() {
+    try {
+      const r = await api('GET', '/admin/audit?limit=12');
+      const ul = clear($('audit'));
+      if (!(r.events || []).length) ul.append(h('li', { class: 's', text: 'Nothing yet.' }));
+      for (const e of r.events || []) {
+        ul.append(h('li', { class: e.outcome === 'ok' ? 'p' : 'f' }, fmtTime(e.time) + '  ' + e.action + '  ' + e.outcome + (e.type ? '  [' + e.type + ']' : '') + (e.detail ? '  ' + e.detail : '')));
+      }
+    } catch (_) { /* best effort */ }
+  }
+
+  function schedule() {
+    clearTimeout(pollTimer);
+    const busy = (data.plugins || []).some((p) => BUSY.has(p.state));
+    pollTimer = setTimeout(async () => { try { await refresh(); } catch (_) {} schedule(); }, busy ? 1200 : 10000);
+  }
+
+  // ---- lifecycle actions --------------------------------------------------------------------
+  async function runOp(label, fn) {
+    say(label + '...');
+    try {
+      const r = await fn();
+      say(label + ' finished');
+      await refresh();
+      const w = (r && r.warnings) || [];
+      if (w.length) { const b = $('banner'); w.forEach((m) => b.append(notice('warn', m))); }
+      return r;
+    } catch (err) {
+      await refresh().catch(() => {});
+      if (err.status === 409 && err.body && err.body.requires) throw err;
+      $('banner').append(notice('bad', label + ' failed: ' + err.message));
+      say(label + ' failed');
+    }
+  }
+
+  async function activate(p, conf) {
+    try { await runOp('Activating ' + p.name, () => api('POST', '/admin/plugins/' + encodeURIComponent(p.id) + '/activate', { confirmations: conf || {} })); }
+    catch (err) { askConfirm(err.body.requires, conf || {}, (c) => activate(p, c)); }
+  }
+  async function deactivate(p, conf) {
+    try { await runOp('Deactivating ' + p.name, () => api('POST', '/admin/plugins/' + encodeURIComponent(p.id) + '/deactivate', { confirmations: conf || {} })); }
+    catch (err) { askConfirm(err.body.requires, conf || {}, (c) => deactivate(p, c)); }
+  }
+  async function rollback(p, conf) {
+    try { await runOp('Rolling back ' + p.name, () => api('POST', '/admin/plugins/' + encodeURIComponent(p.id) + '/rollback', { confirmations: conf || {} })); }
+    catch (err) { askConfirm(err.body.requires, conf || {}, (c) => rollback(p, c)); }
+  }
+  async function remove(p) {
+    if (!confirm('Delete ' + p.name + ' ' + p.version + '? Its container and encrypted secrets are removed.')) return;
+    await runOp('Deleting ' + p.name, () => api('DELETE', '/admin/plugins/' + encodeURIComponent(p.id)));
+  }
+
+  function askConfirm(req, conf, again) {
+    const body = clear($('confirm-body'));
+    body.append(h('p', { text: req.message }));
+    if (req.warning) body.append(notice('warn', req.warning));
+    let read = () => ({});
+    const opts = req.options || [];
+    if (req.field === 'threshold') {
+      const inp = h('input', { id: 'c-threshold', type: 'number', step: 'any', min: '0', required: true });
+      body.append(h('label', { for: 'c-threshold', class: 'req', text: 'Similarity threshold for the new metric' }), inp);
+      read = () => ({ threshold: parseFloat(inp.value) });
+    } else {
+      const map = { embedder_compat: 'embedder_compat', persistence_compat: 'persistence_compat', vector_compat: 'vector_compat' };
+      const key = map[req.field] || req.field;
+      const group = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Choice' });
+      opts.forEach((o, i) => group.append(h('label', {}, h('input', { type: 'radio', name: 'c-choice', value: o, checked: i === 0 }), o)));
+      body.append(group);
+      read = () => { const c = document.querySelector('input[name=c-choice]:checked'); return c ? { [key]: c.value } : {}; };
+    }
+    const dlg = $('confirm-dlg');
+    $('confirm-ok').onclick = () => {
+      const extra = read();
+      if (extra.threshold !== undefined && !(extra.threshold >= 0)) { say('Enter a threshold of 0 or more'); return; }
+      dlg.close(); again(Object.assign({}, conf, extra));
+    };
+    $('confirm-cancel').onclick = () => dlg.close();
+    dlg.showModal();
+  }
+
+  async function showLogs(p) {
+    $('log-title').textContent = 'Logs: ' + p.name;
+    const pre = $('log-pre'); pre.textContent = 'Loading...';
+    $('log-dlg').showModal();
+    try {
+      const r = await api('GET', '/admin/plugins/' + encodeURIComponent(p.id) + '/logs?limit=300');
+      pre.textContent = (r.lines || []).join('\n') || '(no log lines yet)';
+      pre.scrollTop = pre.scrollHeight;
+    } catch (err) { pre.textContent = 'Could not load logs: ' + err.message; }
+  }
+  $('log-close').addEventListener('click', () => $('log-dlg').close());
+
+  // ---- add / upgrade dialog -------------------------------------------------------------------
+  const typeSel = $('f-type');
+  ['llm', 'embedder', 'vector-store', 'persistence', 'queue', 'policy', 'embedding-model', 'vector-index', 'similarity-metric']
+    .forEach((t) => typeSel.append(h('option', { value: t, text: t })));
+  typeSel.addEventListener('change', () => { $('f-type-help').textContent = TYPE_HELP[typeSel.value] || ''; });
+  $('f-type-help').textContent = TYPE_HELP.llm;
+
+  function mode() { return document.querySelector('input[name=mode]:checked').value; }
+  function syncMode() {
+    const m = mode();
+    document.querySelectorAll('#add-source [data-mode]').forEach((el) => { el.hidden = !el.dataset.mode.split(' ').includes(m); });
+  }
+  document.querySelectorAll('input[name=mode]').forEach((r) => r.addEventListener('change', syncMode));
+
+  function openAdd(upgrade) {
+    upgradeOf = upgrade ? upgrade.id : null;
+    $('add-form').reset(); verifyResult = null;
+    clear($('verify-out')).hidden = true; clear($('config-out')).hidden = true; clear($('add-msg'));
+    $('install-btn').hidden = true; $('install-only-btn').hidden = true; $('install-btn').textContent = upgrade ? 'Upgrade & Activate' : 'Verify & Activate';
+    $('add-title').textContent = upgrade ? 'Upgrade ' + upgrade.name : 'Add plugin';
+    if (upgrade) { typeSel.value = upgrade.type; typeSel.disabled = true; } else typeSel.disabled = false;
+    $('f-type-help').textContent = TYPE_HELP[typeSel.value] || '';
+    syncMode();
+    $('add-dlg').showModal();
+    typeSel.focus();
+  }
+  $('add-btn').addEventListener('click', () => openAdd(null));
+  $('add-close').addEventListener('click', () => $('add-dlg').close());
+  $('add-cancel').addEventListener('click', () => $('add-dlg').close());
+  $('add-dlg').addEventListener('close', () => { $('add-form').reset(); verifyResult = null; });
+
+  function baseRequest() {
+    const m = mode();
+    const r = { type: typeSel.value, mode: m };
+    if (m === 'endpoint') {
+      r.endpoint = $('f-endpoint').value.trim();
+      if ($('f-name').value.trim()) r.name = $('f-name').value.trim();
+      if ($('f-token').value) r.secrets = { ENDPOINT_TOKEN: $('f-token').value };
+    }
+    if (m === 'image') r.image = $('f-image').value.trim();
+    if (m === 'repository') { r.repo = $('f-repo').value.trim(); if ($('f-rev').value.trim()) r.revision = $('f-rev').value.trim(); }
+    if (m !== 'repository' && $('f-manifest').value.trim()) r.manifest = $('f-manifest').value;
+    return r;
+  }
+
+  function collectConfig() {
+    const config = {}, secretsOut = {};
+    document.querySelectorAll('#config-out [data-cfg]').forEach((el) => {
+      const name = el.dataset.cfg, t = el.dataset.type;
+      if (t === 'boolean') { config[name] = el.checked; return; }
+      if (el.value === '') return;
+      config[name] = (t === 'integer' || t === 'number') ? Number(el.value) : el.value;
+    });
+    document.querySelectorAll('#config-out [data-secret]').forEach((el) => { if (el.value !== '') secretsOut[el.dataset.secret] = el.value; });
+    if ($('f-token').value) secretsOut.ENDPOINT_TOKEN = $('f-token').value;
+    return Object.keys(secretsOut).length ? { config, secrets: secretsOut } : { config };
+  }
+
+  function buildConfigForm(v) {
+    const out = clear($('config-out')); out.hidden = false;
+    const props = v.config_schema || {};
+    const names = Object.keys(props).sort();
+    if (names.length) {
+      const fs = h('fieldset', {}, h('legend', { text: 'Configuration' }));
+      names.forEach((n) => {
+        const p = props[n], id = 'cfg-' + n;
+        let input;
+        if (p.type === 'boolean') input = h('input', { id, type: 'checkbox', 'data-cfg': n, 'data-type': p.type, checked: p.default === true, style: 'width:auto' });
+        else if (p.type === 'enum') { input = h('select', { id, 'data-cfg': n, 'data-type': p.type }, (p.enum || []).map((o) => h('option', { value: o, selected: p.default === o }, o))); }
+        else input = h('input', { id, 'data-cfg': n, 'data-type': p.type, type: (p.type === 'integer' || p.type === 'number') ? 'number' : 'text', step: p.type === 'number' ? 'any' : null,
+          min: p.min != null ? p.min : null, max: p.max != null ? p.max : null, value: p.default != null ? String(p.default) : '', placeholder: p.type === 'duration' ? 'e.g. 30s' : '', required: p.required === true, spellcheck: 'false' });
+        fs.append(h('label', { for: id, class: p.required ? 'req' : '', text: n + ' (' + p.type + ')' }), input, p.description ? h('p', { class: 'help', text: p.description }) : null);
+      });
+      out.append(fs);
+    }
+    const declared = v.secrets || [];
+    const fs2 = h('fieldset', {}, h('legend', { text: 'Secrets (write-only)' }));
+    let any = false;
+    if (mode() !== 'endpoint') {
+      declared.forEach((s) => {
+        any = true;
+        fs2.append(h('label', { for: 'sec-' + s.name, class: s.required ? 'req' : '', text: s.name }),
+          h('input', { id: 'sec-' + s.name, type: 'password', 'data-secret': s.name, autocomplete: 'new-password', spellcheck: 'false', required: s.required === true }),
+          s.description ? h('p', { class: 'help', text: s.description }) : null);
+      });
+    }
+    if (any) {
+      if (upgradeOf) fs2.append(h('p', { class: 'help', text: 'Leave a field empty to keep the existing secret.' }));
+      out.append(fs2);
+    }
+    if (!names.length && !any) out.append(h('p', { class: 'muted', text: 'This plugin needs no configuration.' }));
+  }
+
+  $('verify-btn').addEventListener('click', async () => {
+    const msg = clear($('add-msg')), out = clear($('verify-out'));
+    clear($('config-out')).hidden = true; out.hidden = true;
+    $('install-btn').hidden = true; $('install-only-btn').hidden = true;
+    const btn = $('verify-btn'); btn.disabled = true; $('verify-hint').textContent = 'Verifying...'; say('Verifying plugin');
+    try {
+      const req = baseRequest();
+      const v = await api('POST', '/admin/plugins/verify', req);
+      verifyResult = v; out.hidden = false;
+      if (v.name) out.append(h('div', { class: 'card' }, h('h3', { text: v.name + ' ' + v.version + ' (' + v.type + ')' }),
+        v.description ? h('div', { class: 'muted', text: v.description }) : null,
+        v.commit ? h('div', { class: 'mono', text: 'commit ' + v.commit }) : null));
+      (v.issues || []).forEach((i) => out.append(notice('bad', (i.path ? i.path + ': ' : '') + i.message)));
+      (v.notes || []).forEach((n) => out.append(notice('info', n)));
+      if (v.verification) out.append(h('details', { open: !v.verification.passed }, h('summary', { text: 'Contract tests: ' + v.verification.summary }),
+        h('ul', { class: 'checks' }, (v.verification.checks || []).map((c) => h('li', { class: c.status === 'pass' ? 'p' : c.status === 'fail' ? 'f' : 's' }, (c.status === 'pass' ? 'PASS ' : c.status === 'fail' ? 'FAIL ' : 'skip ') + c.name + (c.detail ? ' - ' + c.detail : ''))))));
+      if (v.name && (v.valid || !(v.issues || []).some((i) => !/required/i.test(i.message)))) {
+        buildConfigForm(v);
+      }
+      if (v.valid) { $('install-btn').hidden = false; $('install-only-btn').hidden = false; say('Verification passed'); }
+      else say('Verification found problems');
+    } catch (err) { msg.append(notice('bad', err.message)); say('Verification failed'); }
+    finally { btn.disabled = false; $('verify-hint').textContent = ''; }
+  });
+
+  async function install(activateAfter) {
+    const msg = clear($('add-msg'));
+    const req = Object.assign(baseRequest(), collectConfig());
+    if (verifyResult && verifyResult.commit && req.mode === 'repository') req.revision = verifyResult.commit; // pin the exact commit that was verified
+    if (verifyResult && verifyResult.name && req.mode === 'endpoint' && !req.name) req.name = verifyResult.name;
+    const btns = [$('install-btn'), $('install-only-btn')]; btns.forEach((b) => (b.disabled = true));
+    try {
+      const path = upgradeOf ? '/admin/plugins/' + encodeURIComponent(upgradeOf) + '/upgrade' : '/admin/plugins/install';
+      const r = await api('POST', path, req);
+      const id = r.plugin.id;
+      // Secrets are cleared from the form as soon as they have been sent.
+      document.querySelectorAll('#config-out [data-secret]').forEach((el) => { el.value = ''; });
+      $('f-token').value = '';
+      $('add-dlg').close();
+      say('Installing ' + r.plugin.name);
+      await refresh(); schedule();
+      if (activateAfter) waitThenActivate(id);
+    } catch (err) { msg.append(notice('bad', err.message)); }
+    finally { btns.forEach((b) => (b.disabled = false)); }
+  }
+  $('install-btn').addEventListener('click', () => install(true));
+  $('install-only-btn').addEventListener('click', () => install(false));
+
+  // Follow the backend states; activate once the candidate is verified.
+  async function waitThenActivate(id) {
+    for (let i = 0; i < 600; i++) {
+      await new Promise((r) => setTimeout(r, 1200));
+      let p;
+      try { const r = await api('GET', '/admin/plugins/' + encodeURIComponent(id)); p = r.plugin; } catch (_) { return; }
+      render_partial(p);
+      if (p.state === 'verified') { await activate(p); return; }
+      if (p.state === 'failed') { say('Plugin failed: ' + (p.state_detail || '')); return; }
+    }
+  }
+  function render_partial(p) { const i = (data.plugins || []).findIndex((x) => x.id === p.id); if (i >= 0) { data.plugins[i] = p; render(); } }
+
+  // Enter in the dialog must not submit a native form.
+  $('add-form').addEventListener('submit', (e) => e.preventDefault());
+  $('confirm-form').addEventListener('submit', (e) => e.preventDefault());
+})();
+</script>
+</body>
+</html>

@@ -120,6 +120,17 @@ def _build_sentence_transformer() -> EmbeddingModel:
     return SentenceTransformerModel(os.getenv("EMBEDDING_MODEL", DEFAULT_MODEL_NAME))
 
 
+def registered() -> list[str]:
+    """Names of every registered embedding-model backend (for runner introspection)."""
+    load_plugins()
+    return sorted(_REGISTRY)
+
+
+def selected() -> str:
+    """The backend name selected by EMBEDDING_MODEL_BACKEND."""
+    return os.getenv("EMBEDDING_MODEL_BACKEND", DEFAULT_BACKEND)
+
+
 def create_from_env() -> EmbeddingModel:
     """Build the embedding model selected by EMBEDDING_MODEL_BACKEND.
 

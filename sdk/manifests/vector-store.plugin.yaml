@@ -1,0 +1,37 @@
+apiVersion: llmcache.dev/v1alpha1
+kind: Plugin
+
+metadata:
+  name: sdk-memory-vector-store
+  version: 1.0.0
+  description: In-memory brute-force vector store
+
+spec:
+  type: vector-store
+
+  runtime:
+    mode: container
+    dockerfile: Dockerfile
+    port: 8080
+
+  health:
+    path: /health
+    timeout: 5s
+
+  config:
+    properties:
+      dim:
+        type: integer
+        default: 384
+        min: 2
+        max: 4096
+        description: "vector dimension; must equal the embedder's"
+      metric:
+        type: enum
+        enum: ["cosine", "euclidean"]
+        default: cosine
+        description: "distance metric"
+
+  resources:
+    cpu: 250m
+    memory: 128Mi

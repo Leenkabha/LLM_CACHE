@@ -1,0 +1,39 @@
+apiVersion: llmcache.dev/v1alpha1
+kind: Plugin
+
+metadata:
+  name: sdk-echo-llm
+  version: 1.0.0
+  description: Deterministic echo LLM for testing the LLM Cache plugin platform
+
+spec:
+  type: llm
+
+  runtime:
+    mode: container
+    dockerfile: Dockerfile
+    port: 8080
+
+  health:
+    path: /health
+    timeout: 5s
+
+  config:
+    properties:
+      model:
+        type: string
+        default: demo
+        description: "model name sent with every request"
+      request_timeout:
+        type: duration
+        default: 30s
+        description: "per-request timeout the orchestrator applies"
+
+  secrets:
+    - name: API_TOKEN
+      required: false
+      description: "optional upstream credential; the example only reports whether it is set"
+
+  resources:
+    cpu: 250m
+    memory: 128Mi

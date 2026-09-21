@@ -25,6 +25,7 @@ material is intentionally not repeated here.
 14. [Troubleshooting](#14-troubleshooting)
 15. [Extending the system](#15-extending-the-system)
 16. [Quick end-to-end example](#16-quick-end-to-end-example)
+17. [Managing plugins (administrators)](#17-managing-plugins-administrators)
 
 ---
 
@@ -556,3 +557,38 @@ curl -s localhost:8080/stats
 # 6. Optionally, reset everything for a clean slate
 curl -s -X POST localhost:8080/flush
 ```
+
+---
+
+## 17. Managing plugins (administrators)
+
+Administrators can replace any pluggable component from the browser. This is **off
+by default**; nothing on this page exists until you enable it (see
+[docs/PLUGIN_OPERATIONS.md](PLUGIN_OPERATIONS.md#turn-it-on)). You need `ADMIN_TOKEN` and
+`PLUGIN_SECRET_KEY` set and `ENABLE_PLUGIN_INSTALLATION=true`.
+
+1. Open **`http://localhost:8080/plugins`** (a "Plugins" link appears on the query page
+   when the feature is on) and enter the admin token. The token stays in the page's memory
+   only; reloading signs you out.
+2. The **Components** grid shows all nine component types and what serves each: the
+   built-in, or the active plugin.
+3. Click **Add plugin**, choose the type, then the source:
+   * **Hosted endpoint** - a service you already run (https, public address; use the
+     optional token field for its credential);
+   * **Prebuilt image** - an image reference, pinned to its digest, scanned and started isolated;
+   * **GitHub repository** - a repository with `plugin.yaml`; the exact commit is recorded.
+   Image and repository sources need the plugin controller.
+4. Click **Verify**. The page shows the plugin's manifest, and for a hosted endpoint the contract
+   test results. Fill in the configuration form (generated from the manifest) and the **secrets**
+   (write-only; they are never displayed again).
+5. Click **Verify & Activate**. The card follows the real backend state - *Validating manifest,
+   Building, Scanning, Starting candidate, Testing contract, Checking health, Verified* - then activates.
+6. If the change could damage cached data the page asks first: a new embedding model needs *flush* or
+   *re-embed*; persistence needs *migrate*, *empty* or *adopt*; a new similarity metric needs a threshold.
+   Nothing is deleted or mixed silently.
+7. On each plugin: **Deactivate** (back to the built-in), **Upgrade**, **Roll back**, **Delete**, **Logs**.
+   A failed verification or activation leaves the previous plugin serving.
+
+Existing behaviour is unchanged: `POST /flush` and `POST /policy` still need `ADMIN_TOKEN`, and the query page works
+exactly as before. Plugins whose activation replaces a component (for example an LLM plugin) apply to every
+subsequent `/query`; cached replies stay valid across an LLM swap.

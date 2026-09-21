@@ -4,6 +4,7 @@
 package persistence
 
 import (
+	"errors"
 	"sync"
 	"time"
 
@@ -74,6 +75,33 @@ type Store interface {
 	Delete(id string) error
 	Flush() error
 	Health() error
+}
+
+// Errors a store that can explain a failed lookup returns from LoadDetailed.
+// Store.Load collapses all three into "not found" for the orchestrator.
+var (
+	// ErrNotFound means no entry exists under the id.
+	ErrNotFound = errors.New("cache entry not found")
+	// ErrInvalidData means an entry exists but its stored data is unusable.
+	ErrInvalidData = errors.New("stored cache entry is invalid")
+	// ErrBackend means the storage backend failed, so existence is unknown.
+	ErrBackend = errors.New("persistence backend failure")
+)
+
+// DetailedLoader is optionally implemented by stores that can tell a missing
+// entry from a backend failure or corrupt data. Migration and contract checks
+// use it; the query path does not need it.
+type DetailedLoader interface {
+	LoadDetailed(id string) (Entry, error)
+}
+
+// LoadDetailed is the DetailedLoader implementation for the memory store.
+func (m *MemoryStore) LoadDetailed(id string) (Entry, error) {
+	entry, ok := m.Load(id)
+	if !ok {
+		return Entry{}, ErrNotFound
+	}
+	return entry, nil
 }
 
 // MemoryStore is an in-memory implementation used by tests and local fallback

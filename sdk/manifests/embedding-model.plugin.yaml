@@ -1,0 +1,35 @@
+apiVersion: llmcache.dev/v1alpha1
+kind: Plugin
+
+metadata:
+  name: sdk-hash-model
+  version: 1.0.0
+  description: Python EmbeddingModel example
+
+spec:
+  type: embedding-model
+
+  runtime:
+    mode: python
+
+  python:
+    module: sdk_hash_model
+    backend: sdk-hash
+    requirements: requirements.txt
+
+  health:
+    path: /health
+    timeout: 5s
+
+  config:
+    properties:
+      dim:
+        type: integer
+        default: 384
+        min: 8
+        max: 4096
+        description: "vector dimension; must match the vector store"
+
+  resources:
+    cpu: 500m
+    memory: 512Mi

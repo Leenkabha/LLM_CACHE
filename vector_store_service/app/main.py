@@ -27,12 +27,16 @@ distance <= threshold. The exact formula belongs to the active metric.
 """
 
 import os
+import threading
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from . import index as index_module
+from . import metrics as metrics_module
 from .index import VectorIndex, create_from_env as create_index
 from .metrics import SimilarityMetric, create_from_env as create_metric
+from .plugin_auth import install_plugin_auth
 
 # DIM = required length of every vector. It is NOT chosen here -- it must equal
 # the embedding model's output size (all-MiniLM-L6-v2 -> 384). It is read from
@@ -40,11 +44,17 @@ from .metrics import SimilarityMetric, create_from_env as create_metric
 DIM = int(os.getenv("VECTOR_DIM", "384"))
 
 app = FastAPI(title="Vector Store Service", version="1.0.0")
+install_plugin_auth(app)  # no-op unless PLUGIN_AUTH_TOKEN is set (plugin-runner images)
 
 # Resolve the pluggable seams ONCE at startup. Everything below talks to the
 # index purely through the VectorIndex interface.
 _metric: SimilarityMetric = create_metric()
 _index: VectorIndex = create_index(DIM, _metric)
+
+# FastAPI runs these synchronous handlers on a thread pool, so requests overlap.
+# Index implementations (FAISS included) are not required to be thread-safe, so
+# every index operation is serialised here. A plugin author gets a safe default.
+_lock = threading.RLock()
 
 
 class SearchRequest(BaseModel):
@@ -93,10 +103,14 @@ class RebuildResponse(BaseModel):
     restored: int
 
 
+# Every route is also served under /v1/..., the versioned plugin protocol (see
+# docs/PLUGIN_CONTRACTS.md); the unversioned routes remain for compatibility.
 @app.post("/search", response_model=SearchResponse)
+@app.post("/v1/search", response_model=SearchResponse)
 def search(req: SearchRequest) -> SearchResponse:
     try:
-        result = _index.search(req.vector, req.top_k, req.threshold)
+        with _lock:
+            result = _index.search(req.vector, req.top_k, req.threshold)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return SearchResponse(
@@ -106,15 +120,18 @@ def search(req: SearchRequest) -> SearchResponse:
 
 
 @app.post("/upsert", response_model=UpsertResponse)
+@app.post("/v1/upsert", response_model=UpsertResponse)
 def upsert(req: UpsertRequest) -> UpsertResponse:
     try:
-        entry_id = _index.upsert(req.vector)
+        with _lock:
+            entry_id = _index.upsert(req.vector)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return UpsertResponse(id=entry_id)
 
 
 @app.post("/rebuild", response_model=RebuildResponse)
+@app.post("/v1/rebuild", response_model=RebuildResponse)
 def rebuild(req: RebuildRequest) -> RebuildResponse:
     """Restore the RAM-only index from durable Redis cache entries.
 
@@ -123,28 +140,79 @@ def rebuild(req: RebuildRequest) -> RebuildResponse:
     once at startup with everything Redis still has.
     """
     try:
-        restored = _index.rebuild([(entry.id, entry.vector) for entry in req.entries])
+        with _lock:
+            restored = _index.rebuild([(entry.id, entry.vector) for entry in req.entries])
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return RebuildResponse(restored=restored)
 
 
 @app.delete("/entries/{entry_id}")
+@app.delete("/v1/entries/{entry_id}")
 def delete(entry_id: str) -> dict:
-    if not _index.delete(entry_id):
+    with _lock:
+        deleted = _index.delete(entry_id)
+    if not deleted:
         raise HTTPException(status_code=404, detail="not found")
     return {"status": "deleted"}
 
 
 @app.get("/size")
+@app.get("/v1/size")
 def size() -> dict:
-    return {"size": _index.size()}
+    with _lock:
+        return {"size": _index.size()}
 
 
 @app.post("/flush")
+@app.post("/v1/flush")
 def flush() -> dict:
-    _index.flush()
+    with _lock:
+        _index.flush()
     return {"status": "flushed"}
+
+
+@app.get("/v1/info")
+def info() -> dict:
+    """Optional: the vector dimension and metric this store was started with.
+
+    The plugin platform uses it to refuse an embedder whose vectors do not fit.
+    (GET /health keeps its original {"status": "ok"} body.)
+    """
+    return {"dim": DIM, "metric": _metric.name}
+
+
+@app.get("/v1/runner-info")
+def runner_info() -> dict:
+    # Lets the plugin platform prove the developer's package was discovered and
+    # selected in this runner image.
+    return {
+        "kind": "vector",
+        "backend": index_module.selected(),
+        "metric": _metric.name,
+        "registered_backends": index_module.registered(),
+        "registered_metrics": metrics_module.registered(),
+    }
+
+
+@app.get("/v1/metric-info")
+def metric_info() -> dict:
+    return {"name": _metric.name, "faiss_metric_type": int(_metric.faiss_metric_type)}
+
+
+class MetricDistanceRequest(BaseModel):
+    scores: list[float] = Field(max_length=1000)
+
+
+@app.post("/v1/metric/distance")
+def metric_distance(req: MetricDistanceRequest) -> dict:
+    """Convert raw index scores to distances in-process (no per-score network
+    call happens during search; this endpoint exists only so the contract test can
+    check score conversion and the lower-is-better convention)."""
+    try:
+        return {"distances": [float(_metric.to_distance(score)) for score in req.scores]}
+    except (ValueError, ArithmeticError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/health")

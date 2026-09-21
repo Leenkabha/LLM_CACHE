@@ -3,6 +3,7 @@ package policy
 
 import (
 	"fmt"
+	"sync/atomic"
 
 	"github.com/leenkabha/llm_cache/internal/config"
 	"github.com/leenkabha/llm_cache/internal/plugin"
@@ -51,9 +52,33 @@ func init() {
 	Register(PolicyLFU, func(config.Config) (EvictionPolicy, error) { return newLFUPolicy(), nil })
 }
 
+// Manager fronts the active EvictionPolicy. The policy lives behind an atomic
+// pointer so the plugin platform can replace it while requests are in flight:
+// calls that already loaded the old policy finish on it, new calls use the new
+// one.
 type Manager struct {
-	policy EvictionPolicy
+	policy atomic.Pointer[policyHolder]
 }
+
+type policyHolder struct{ EvictionPolicy }
+
+func (m *Manager) load() EvictionPolicy { return m.policy.Load().EvictionPolicy }
+
+// NewManagerWith wraps an existing policy implementation.
+func NewManagerWith(p EvictionPolicy) *Manager {
+	m := &Manager{}
+	m.policy.Store(&policyHolder{p})
+	return m
+}
+
+// Replace atomically installs next and returns the policy it replaced. The
+// caller is responsible for having replayed the cache's entries into next first.
+func (m *Manager) Replace(next EvictionPolicy) EvictionPolicy {
+	return m.policy.Swap(&policyHolder{next}).EvictionPolicy
+}
+
+// Active returns the current policy implementation.
+func (m *Manager) Active() EvictionPolicy { return m.load() }
 
 // New builds a policy Manager for cfg.Policy.
 func New(cfg config.Config) (*Manager, error) {
@@ -65,7 +90,7 @@ func New(cfg config.Config) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Manager{policy: p}, nil
+	return NewManagerWith(p), nil
 }
 
 // NewManager builds a policy Manager for the named eviction policy.
@@ -78,7 +103,7 @@ func NewManager(name string) (*Manager, error) {
 
 // Current returns the active policy name.
 func (m *Manager) Current() string {
-	return m.policy.Name()
+	return m.load().Name()
 }
 
 // Set validates a requested policy.
@@ -98,16 +123,16 @@ func (m *Manager) Set(name string) error {
 
 // OnHit records that an existing cache entry was used. LRU updates recency here;
 // LFU updates frequency.
-func (m *Manager) OnHit(id string) { m.policy.OnHit(id) }
+func (m *Manager) OnHit(id string) { m.load().OnHit(id) }
 
 // OnInsert records that a new cache entry was admitted.
-func (m *Manager) OnInsert(id string) { m.policy.OnInsert(id) }
+func (m *Manager) OnInsert(id string) { m.load().OnInsert(id) }
 
 // OnDelete removes any policy-owned metadata for a cache entry.
-func (m *Manager) OnDelete(id string) { m.policy.OnDelete(id) }
+func (m *Manager) OnDelete(id string) { m.load().OnDelete(id) }
 
 // Victim returns the next entry id to evict when capacity is exceeded.
-func (m *Manager) Victim() (string, bool) { return m.policy.Victim() }
+func (m *Manager) Victim() (string, bool) { return m.load().Victim() }
 
 // Flush clears policy-owned metadata.
-func (m *Manager) Flush() { m.policy.Flush() }
+func (m *Manager) Flush() { m.load().Flush() }

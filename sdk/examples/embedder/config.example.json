@@ -1,0 +1,10 @@
+{
+  "type": "embedder",
+  "mode": "repository",
+  "repo": "https://github.com/YOU/YOUR-PLUGIN-REPO",
+  "revision": "main",
+  "config": {
+    "dim": 384
+  },
+  "secrets": {}
+}

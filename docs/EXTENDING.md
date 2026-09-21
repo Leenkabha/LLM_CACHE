@@ -3,6 +3,15 @@
 This guide is for developers extending this repository and operators selecting
 those implementations. No changes to the orchestrator query flow are needed.
 
+> **Two ways to extend.** This page describes the *in-repository* way: Go adapters
+> compiled into the orchestrator, and Python modules dropped into `app/plugins/`. It
+> needs a source edit and a rebuild. For a plugin **without editing this repository**
+> - a hosted endpoint, a prebuilt image or a GitHub repository, installed from the
+> web UI, isolated, contract-tested and rolled back automatically - use the
+> [plugin platform](PLUGIN_PLATFORM.md) and the [SDK](../sdk/README.md). Both keep
+> working side by side: everything registered here is a *built-in* the platform can
+> return a component to.
+
 ## What is pluggable, and for whom?
 
 | Extension | Implementer | Runtime selector | Contract location |
@@ -13,6 +22,12 @@ those implementations. No changes to the orchestrator query flow are needed.
 | Vector-store client | Developer connecting a vector service | `VECTORSTORE_BACKEND` | `internal/vectorstore/client.go`: `VectorStore` |
 | Cache persistence | Developer changing reply storage | `PERSISTENCE_BACKEND` | `internal/persistence/store.go`: `Store` |
 | Update queue | Developer changing asynchronous cache writes | `QUEUE_BACKEND` | `internal/cachequeue/redis_stream.go`: `Queue` |
+
+All nine components - including the Python ones - are also available as
+installable plugins with versioned remote protocols; see
+[PLUGIN_CONTRACTS.md](PLUGIN_CONTRACTS.md). The reusable Go contract helpers
+below (`internal/contracttest`) remain for in-repository adapters; the platform's
+own suites live in `internal/plugins/contract`.
 
 Python index, metric, and embedding-model extensions have separate registries
 in `vector_store_service/app/index.py`, `vector_store_service/app/metrics.py`,

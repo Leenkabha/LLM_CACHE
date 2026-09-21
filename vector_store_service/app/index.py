@@ -225,6 +225,17 @@ def _build_faiss(dim: int, metric: SimilarityMetric) -> VectorIndex:
     return FaissVectorIndex(dim, metric)
 
 
+def registered() -> list[str]:
+    """Names of every registered vector-index backend (for runner introspection)."""
+    load_plugins()
+    return sorted(_REGISTRY)
+
+
+def selected() -> str:
+    """The backend name selected by VECTOR_INDEX_BACKEND."""
+    return os.getenv("VECTOR_INDEX_BACKEND", DEFAULT_BACKEND)
+
+
 def create_from_env(dim: int, metric: SimilarityMetric) -> VectorIndex:
     """Build the vector index selected by VECTOR_INDEX_BACKEND (default faiss).
 

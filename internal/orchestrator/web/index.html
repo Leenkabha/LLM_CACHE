@@ -166,11 +166,13 @@
 
   <div id="usage" class="usage" hidden></div>
 
-  <footer>Talking to the orchestrator at <code id="origin"></code></footer>
+  <footer>Talking to the orchestrator at <code id="origin"></code> &middot; <a href="/plugins" id="plugins-link" hidden>Plugins</a></footer>
 </main>
 
 <script>
   document.getElementById('origin').textContent = location.origin;
+  // Show the Plugins link only when this server has the plugin API enabled.
+  fetch('/plugins', { method: 'HEAD' }).then((r) => { if (r.ok) document.getElementById('plugins-link').hidden = false; }).catch(() => {});
 
   const form = document.getElementById('query-form');
   const promptEl = document.getElementById('prompt');

@@ -1,0 +1,26 @@
+apiVersion: llmcache.dev/v1alpha1
+kind: Plugin
+
+metadata:
+  name: sdk-angular-metric
+  version: 1.0.0
+  description: Python SimilarityMetric example (angular distance)
+
+spec:
+  type: similarity-metric
+
+  runtime:
+    mode: python
+
+  python:
+    module: sdk_angular_metric
+    backend: sdk-angular
+    requirements: requirements.txt
+
+  health:
+    path: /health
+    timeout: 5s
+
+  resources:
+    cpu: 500m
+    memory: 512Mi

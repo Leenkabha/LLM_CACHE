@@ -4,7 +4,36 @@ A **semantic cache** that sits in front of a remote LLM. When someone asks a que
 
 ---
 
-## Extend the system
+## Add a plugin without touching the code
+
+An administrator can add a custom LLM, embedder, vector store, persistence layer,
+queue, eviction policy, or a Python embedding model / vector index / similarity metric
+**from the web UI** (`/plugins`) - no source edits, no `.env` edits, no Compose edits, no
+rebuild. A plugin is a hosted endpoint, a prebuilt image, or a GitHub repository with a
+`plugin.yaml`; it runs isolated, is contract-tested and health-checked before it is
+activated, and the previous implementation stays in place if anything fails. It is
+**off by default** and additive: existing configuration works unchanged.
+
+* Overview, what works and what needs container infrastructure: [docs/PLUGIN_PLATFORM.md](docs/PLUGIN_PLATFORM.md)
+* Turn it on and operate it: [docs/PLUGIN_OPERATIONS.md](docs/PLUGIN_OPERATIONS.md)
+* Write a plugin: [sdk/](sdk/README.md), [manifest](docs/PLUGIN_MANIFEST.md), [protocols](docs/PLUGIN_CONTRACTS.md)
+* Security model and the Docker-socket warning: [docs/PLUGIN_SECURITY.md](docs/PLUGIN_SECURITY.md)
+
+**Just want to see it?** `scripts/demo_plugins.sh` does everything below in one command (sets up `.env`
+without overwriting it, starts the stack, installs and activates the example plugin) and prints the URL and
+admin token. Use `scripts/demo_plugins.sh --empty` to start with no plugin and add it yourself in the UI.
+
+```bash
+# enable (hosted-endpoint plugins need nothing else)
+echo 'ENABLE_PLUGIN_INSTALLATION=true'            >> .env
+echo "ADMIN_TOKEN=$(openssl rand -hex 24)"         >> .env
+echo "PLUGIN_SECRET_KEY=$(openssl rand -base64 32)" >> .env
+docker compose up --build -d          # then open http://localhost:8080/plugins
+# image and GitHub-repository installs also need the controller:
+#   PLUGIN_CONTROLLER_URL=http://plugin-controller:8090, PLUGIN_CONTROLLER_TOKEN=..., --profile plugins
+```
+
+## Extend the system in code
 
 See [the extension guide](docs/EXTENDING.md) for interface contracts, required
 functions, registration, configuration, and reusable tests for custom eviction
@@ -381,6 +410,11 @@ unit-testable with in-memory doubles via `orchestrator.NewWithDependencies`.
 | Vector index *(inside vector-store service)* | `VectorIndex` | `faiss` | `VECTOR_INDEX_BACKEND` |
 | Similarity metric *(inside vector-store service)* | `SimilarityMetric` | `cosine`, `euclidean` | `SIMILARITY_METRIC` |
 
+> The table lists the **built-in** implementations, selected at startup. To use a
+> different one *without code changes or a rebuild*, install it as a plugin (see
+> "Add a plugin without touching the code" above); a deactivated plugin returns its
+> component to the built-in named here.
+
 > Note: `EMBEDDING_BACKEND`/`VECTORSTORE_BACKEND` select the **orchestrator's
 > client adapter**; the `*_MODEL_BACKEND` / `VECTOR_INDEX_BACKEND` variables
 > select the engine **inside** each Python service. They are deliberately
@@ -433,8 +467,12 @@ docker compose down
 LLM_CACHE/
 ├── cmd/
 │   ├── orchestrator/main.go      # orchestrator entry point
-│   └── cli/main.go               # command-line client
+│   ├── cli/main.go               # command-line client
+│   ├── plugin-controller/        # internal service that builds/starts isolated plugin containers
+│   └── llm-cache-plugin/         # developer tool: validate a manifest, run the contract tests
 ├── internal/
+│   ├── plugins/                  # plugin platform: manifest, secrets, registry, protocol, contract,
+│   │                             #   dynamic, manager, admin, controller (see docs/PLUGIN_PLATFORM.md)
 │   ├── orchestrator/service.go   # request flow + BuildDependencies wiring
 │   ├── config/config.go          # env var configuration (+ backend selectors)
 │   ├── cachequeue/redis_stream.go # Queue interface + Redis Streams adapter + factory
@@ -455,8 +493,11 @@ LLM_CACHE/
 │       ├── main.py               # thin FastAPI layer
 │       ├── index.py              # VectorIndex interface + FAISS adapter + factory
 │       └── metrics.py            # SimilarityMetric interface + cosine/euclidean
-├── deploy/                       # Dockerfiles
-├── docker-compose.yml            # runs all services together
+├── sdk/                          # plugin SDK: examples for all nine types, manifests, contract tests
+├── test/e2e/                     # end-to-end plugin acceptance test (scripts/e2e_plugins.sh)
+├── docs/PLUGIN_*.md              # plugin platform, manifest, contracts, security, operations
+├── deploy/                       # Dockerfiles (incl. the plugin controller)
+├── docker-compose.yml            # runs all services together (+ optional `plugins` profile)
 ├── .env.example                  # config template (all pluggable selectors)
 └── spec1.pdf / spec 2.pdf        # functional spec & HLD
 ```

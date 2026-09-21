@@ -59,6 +59,18 @@ services:
       GEMINI_DAILY_REQUEST_LIMIT: "${GEMINI_DAILY_REQUEST_LIMIT:-0}"
       GEMINI_DAILY_TOKEN_BUDGET: "${GEMINI_DAILY_TOKEN_BUDGET:-0}"
       LOG_FILE: "${LOG_FILE:-logs/orchestrator.log}"
+      # Plugin platform. Everything is OFF unless you enable it; see docs/PLUGIN_PLATFORM.md.
+      # Management needs ADMIN_TOKEN and PLUGIN_SECRET_KEY as well as the switch below.
+      ADMIN_TOKEN: "${ADMIN_TOKEN:-}"
+      ENABLE_PLUGIN_INSTALLATION: "${ENABLE_PLUGIN_INSTALLATION:-false}"
+      PLUGIN_SECRET_KEY: "${PLUGIN_SECRET_KEY:-}"
+      ALLOW_INSECURE_PLUGIN_ENDPOINTS: "${ALLOW_INSECURE_PLUGIN_ENDPOINTS:-false}"
+      PLUGIN_CONTROLLER_URL: "${PLUGIN_CONTROLLER_URL:-}"
+      PLUGIN_CONTROLLER_TOKEN: "${PLUGIN_CONTROLLER_TOKEN:-}"
+      PLUGIN_BUILD_TIMEOUT: "${PLUGIN_BUILD_TIMEOUT:-}"
+      PLUGIN_HEALTH_TIMEOUT: "${PLUGIN_HEALTH_TIMEOUT:-}"
+      PLUGIN_CPU_LIMIT: "${PLUGIN_CPU_LIMIT:-}"
+      PLUGIN_MEMORY_LIMIT: "${PLUGIN_MEMORY_LIMIT:-}"
     volumes:
       - ./logs:/app/logs
     depends_on:
@@ -86,3 +98,63 @@ services:
       dockerfile: examples/llm-server/Dockerfile
     ports:
       - "127.0.0.1:8090:8090"
+
+  # ---- Optional: image and repository plugin installation -----------------------
+  # Start with:  docker compose --profile plugins up --build -d
+  # and set ENABLE_PLUGIN_INSTALLATION=true, ADMIN_TOKEN, PLUGIN_SECRET_KEY,
+  # PLUGIN_CONTROLLER_URL=http://plugin-controller:8090 and PLUGIN_CONTROLLER_TOKEN in .env.
+  #
+  # SECURITY: access to a Docker daemon is effectively root on that host. Neither the
+  # orchestrator nor the web UI gets it. Only the controller reaches the daemon, and
+  # only through this filtering proxy (no exec, volumes, secrets, swarm or system API).
+  # The proxy narrows the API surface; container creation is still powerful, so treat
+  # the controller as a privileged component. See docs/PLUGIN_SECURITY.md.
+  docker-socket-proxy:
+    profiles: [plugins]
+    image: tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+    environment:
+      CONTAINERS: "1"
+      IMAGES: "1"
+      NETWORKS: "1"
+      BUILD: "1"
+      POST: "1"
+      INFO: "1"
+      VERSION: "1"
+      PING: "1"
+      EXEC: "0"
+      VOLUMES: "0"
+      SECRETS: "0"
+      SWARM: "0"
+      SYSTEM: "0"
+      SERVICES: "0"
+      TASKS: "0"
+      NODES: "0"
+      PLUGINS: "0"
+      AUTH: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # not published: reachable only from the controller on the compose network
+
+  plugin-controller:
+    profiles: [plugins]
+    build:
+      context: .
+      dockerfile: deploy/controller.Dockerfile
+    restart: unless-stopped
+    environment:
+      DOCKER_HOST: "tcp://docker-socket-proxy:2375"
+      PLUGIN_CONTROLLER_TOKEN: "${PLUGIN_CONTROLLER_TOKEN:-}"   # required (16+ chars) when the plugins profile is used; the controller refuses to start without it
+      PLUGIN_CPU_LIMIT: "${PLUGIN_CPU_LIMIT:-1}"
+      PLUGIN_MEMORY_LIMIT: "${PLUGIN_MEMORY_LIMIT:-512Mi}"
+      PLUGIN_BUILD_TIMEOUT: "${PLUGIN_BUILD_TIMEOUT:-10m}"
+      PLUGIN_HEALTH_TIMEOUT: "${PLUGIN_HEALTH_TIMEOUT:-60s}"
+      PLUGIN_SCANNER: "${PLUGIN_SCANNER:-none}"
+      PLUGIN_REQUIRE_SCAN: "${PLUGIN_REQUIRE_SCAN:-false}"
+      # Development conveniences; keep them false in production.
+      PLUGIN_ALLOW_LOCAL_IMAGES: "${PLUGIN_ALLOW_LOCAL_IMAGES:-false}"
+      PLUGIN_ALLOW_LOCAL_GIT: "${PLUGIN_ALLOW_LOCAL_GIT:-false}"
+      PLUGIN_ALLOW_EGRESS: "${PLUGIN_ALLOW_EGRESS:-false}"
+    depends_on:
+      - docker-socket-proxy
+    # not published: only the orchestrator (same compose network) may call it

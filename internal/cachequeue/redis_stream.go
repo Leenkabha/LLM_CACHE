@@ -40,6 +40,13 @@ type Queue interface {
 	Run(ctx context.Context, handler func(context.Context, Job) error)
 }
 
+// Depther is optionally implemented by queues that can report how many jobs are
+// still waiting (not yet acknowledged). The plugin platform uses it to decide
+// when an old queue has drained after a switch.
+type Depther interface {
+	Depth(ctx context.Context) (int, error)
+}
+
 // Backend names the built-in queue adapters selectable via configuration.
 const (
 	// BackendRedis uses Redis Streams as the durable transport (default).
@@ -157,16 +164,41 @@ func (q *RedisStreamQueue) Run(ctx context.Context, handler func(context.Context
 			for _, message := range stream.Messages {
 				job, err := jobFromMessage(message)
 				if err != nil {
-					_ = q.client.XAck(ctx, q.stream, q.group, message.ID).Err()
+					q.ack(message.ID)
 					continue
 				}
 				if err := handler(ctx, job); err != nil {
 					continue
 				}
-				_ = q.client.XAck(ctx, q.stream, q.group, message.ID).Err()
+				q.ack(message.ID)
 			}
 		}
 	}
+}
+
+// ack acknowledges a message on a context that survives cancellation of the
+// worker's context. Once the handler has succeeded the job's effects exist, so
+// a cancellation arriving right then (a shutdown, or the plugin platform
+// switching queues) must not turn into a redelivery and a duplicate cache entry.
+func (q *RedisStreamQueue) ack(id string) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultRedisTimeout)
+	defer cancel()
+	_ = q.client.XAck(ctx, q.stream, q.group, id).Err()
+}
+
+// Depth returns the number of jobs not yet acknowledged: those never delivered
+// plus those delivered but still pending.
+func (q *RedisStreamQueue) Depth(ctx context.Context) (int, error) {
+	groups, err := q.client.XInfoGroups(ctx, q.stream).Result()
+	if err != nil {
+		return 0, err
+	}
+	for _, g := range groups {
+		if g.Name == q.group {
+			return int(g.Lag) + int(g.Pending), nil
+		}
+	}
+	return 0, nil
 }
 
 func jobFromMessage(message redis.XMessage) (Job, error) {

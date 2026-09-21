@@ -1,0 +1,23 @@
+apiVersion: llmcache.dev/v1alpha1
+kind: Plugin
+
+metadata:
+  name: sdk-memory-persistence
+  version: 1.0.0
+  description: In-memory cache-entry store (NOT durable across restarts)
+
+spec:
+  type: persistence
+
+  runtime:
+    mode: container
+    dockerfile: Dockerfile
+    port: 8080
+
+  health:
+    path: /health
+    timeout: 5s
+
+  resources:
+    cpu: 250m
+    memory: 128Mi

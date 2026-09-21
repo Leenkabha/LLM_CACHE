@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/leenkabha/llm_cache/internal/cachequeue"
@@ -30,6 +32,16 @@ type Service struct {
 	store  persistence.Store
 	queue  cachequeue.Queue
 	policy *policy.Manager
+
+	// writeGate lets the plugin platform pause cache WRITES (the async worker and
+	// capacity eviction) while it swaps a component that holds cache state.
+	// Queries never take it: reads keep flowing on the old implementation.
+	writeGate sync.RWMutex
+	// threshold is the live similarity threshold. It starts at cfg.Threshold and
+	// changes only when a similarity metric plugin is activated.
+	threshold    atomic.Uint64
+	thresholdSet atomic.Bool
+	admin        http.Handler // optional plugin-management API, mounted under /admin/
 
 	mu             sync.Mutex
 	hits           int
@@ -148,6 +160,10 @@ func (s *Service) Routes() http.Handler {
 	mux.HandleFunc("POST /flush", s.handleFlush)
 	mux.HandleFunc("POST /policy", s.handlePolicy)
 	mux.HandleFunc("GET /health", s.handleHealth)
+	if s.admin != nil {
+		mux.Handle("/admin/", s.admin)
+		mux.HandleFunc("GET /plugins", s.handlePluginsUI)
+	}
 	return newGuard(mux, s.cfg.AdminToken, s.cfg.RateLimitPerMin, s.cfg.TrustProxy)
 }
 
@@ -221,7 +237,7 @@ func (s *Service) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	matches, err := s.vstore.Search(ctx, vec, s.cfg.TopK, s.cfg.Threshold)
+	matches, err := s.vstore.Search(ctx, vec, s.cfg.TopK, s.Threshold())
 	if err != nil {
 		log.Printf("query vector search failed: remote=%s err=%v", r.RemoteAddr, err)
 		writeError(w, http.StatusBadGateway, "vector search failed: "+err.Error())
@@ -294,6 +310,8 @@ func (s *Service) handleCacheUpdateJob(ctx context.Context, job cachequeue.Job) 
 
 // updateCache stores a new <vector, reply> pair from the Redis Streams worker.
 func (s *Service) updateCache(ctx context.Context, prompt string, vec []float64, reply string) error {
+	s.writeGate.RLock()
+	defer s.writeGate.RUnlock()
 	id, err := s.vstore.Upsert(ctx, vec)
 	if err != nil {
 		log.Printf("cache update failed: vector_upsert err=%v", err)
@@ -473,10 +491,21 @@ func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleFlush(w http.ResponseWriter, r *http.Request) {
 	log.Printf("flush requested")
-	if err := s.vstore.Flush(r.Context()); err != nil {
+	if err := s.FlushCache(r.Context()); err != nil {
 		log.Printf("flush failed: vectorstore err=%v", err)
 		writeError(w, http.StatusBadGateway, "flush failed: "+err.Error())
 		return
+	}
+	log.Printf("flush completed")
+	writeJSON(w, map[string]string{"status": "flushed"})
+}
+
+// FlushCache empties the vector store, the persisted entries and the policy
+// state, and resets the counters. It does not take the write gate: callers that
+// already hold it (the plugin platform) can use it directly.
+func (s *Service) FlushCache(ctx context.Context) error {
+	if err := s.vstore.Flush(ctx); err != nil {
+		return err
 	}
 	if err := s.store.Flush(); err != nil {
 		log.Printf("flush warning: store err=%v", err)
@@ -488,9 +517,50 @@ func (s *Service) handleFlush(w http.ResponseWriter, r *http.Request) {
 	s.hitDistanceSum = 0
 	s.evictions = 0
 	s.mu.Unlock()
-	log.Printf("flush completed")
-	writeJSON(w, map[string]string{"status": "flushed"})
+	return nil
 }
+
+// Threshold returns the live similarity threshold.
+func (s *Service) Threshold() float64 {
+	if !s.thresholdSet.Load() {
+		return s.cfg.Threshold
+	}
+	return math.Float64frombits(s.threshold.Load())
+}
+
+// SetThreshold changes the similarity threshold used for new queries.
+func (s *Service) SetThreshold(v float64) {
+	s.threshold.Store(math.Float64bits(v))
+	s.thresholdSet.Store(true)
+}
+
+// PauseWrites blocks cache writes until the returned function is called. In-
+// flight writes finish first; queries are unaffected. It gives up (and the
+// returned function is nil) if ctx ends before the writes drain.
+func (s *Service) PauseWrites(ctx context.Context) (resume func(), err error) {
+	locked := make(chan struct{})
+	go func() {
+		s.writeGate.Lock()
+		close(locked)
+	}()
+	select {
+	case <-locked:
+		return s.writeGate.Unlock, nil
+	case <-ctx.Done():
+		go func() { // hand the lock straight back once it is eventually granted
+			<-locked
+			s.writeGate.Unlock()
+		}()
+		return nil, fmt.Errorf("cache writes did not drain: %w", ctx.Err())
+	}
+}
+
+// SetAdminHandler mounts the plugin-management API under /admin/ and its UI at
+// /plugins. Call before Routes.
+func (s *Service) SetAdminHandler(h http.Handler) { s.admin = h }
+
+// CacheSize returns the number of persisted cache entries.
+func (s *Service) CacheSize() (int, error) { return s.store.Size() }
 
 type policyRequest struct {
 	Policy string `json:"policy"`

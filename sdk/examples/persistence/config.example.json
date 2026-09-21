@@ -1,0 +1,8 @@
+{
+  "type": "persistence",
+  "mode": "repository",
+  "repo": "https://github.com/YOU/YOUR-PLUGIN-REPO",
+  "revision": "main",
+  "config": {},
+  "secrets": {}
+}

@@ -1,0 +1,11 @@
+{
+  "type": "vector-store",
+  "mode": "repository",
+  "repo": "https://github.com/YOU/YOUR-PLUGIN-REPO",
+  "revision": "main",
+  "config": {
+    "dim": 384,
+    "metric": "cosine"
+  },
+  "secrets": {}
+}

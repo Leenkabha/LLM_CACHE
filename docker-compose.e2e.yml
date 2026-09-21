@@ -1,0 +1,30 @@
+# Overrides used ONLY by scripts/e2e_plugins.sh. It runs the normal stack next to
+# whatever else is on the machine (loopback port, project name) and turns on the
+# plugin platform with development conveniences (local images and local git).
+#   docker compose -p llmcache-e2e -f docker-compose.yml -f docker-compose.e2e.yml --profile plugins up ...
+services:
+  embedding:
+    ports: !reset []
+  vectorstore:
+    ports: !reset []
+  redis:
+    ports: !reset []
+  orchestrator:
+    ports: !override
+      - "127.0.0.1:${E2E_PORT:-18180}:8080"
+    environment:
+      LLM_MODE: "stub"
+      ADMIN_TOKEN: "${ADMIN_TOKEN}"
+      ENABLE_PLUGIN_INSTALLATION: "true"
+      PLUGIN_SECRET_KEY: "${PLUGIN_SECRET_KEY}"
+      PLUGIN_CONTROLLER_URL: "http://plugin-controller:8090"
+      PLUGIN_CONTROLLER_TOKEN: "${PLUGIN_CONTROLLER_TOKEN}"
+      ALLOW_INSECURE_PLUGIN_ENDPOINTS: "true"   # also lets the manager accept /e2e-repos/... local repositories
+      PLUGIN_HEALTH_TIMEOUT: "90s"
+      PLUGIN_ROLLBACK_WINDOW: "30m"
+  plugin-controller:
+    environment:
+      PLUGIN_ALLOW_LOCAL_IMAGES: "true"
+      PLUGIN_ALLOW_LOCAL_GIT: "true"
+    volumes:
+      - ${E2E_REPOS:-/tmp/llmcache-e2e/repos}:/e2e-repos:ro

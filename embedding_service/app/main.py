@@ -26,9 +26,12 @@ or a vector dimension anymore -- both come from whichever model is loaded
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+from . import models
 from .models import EmbeddingModel, create_from_env
+from .plugin_auth import install_plugin_auth
 
 app = FastAPI(title="Embedding Service", version="1.0.0")
+install_plugin_auth(app)  # no-op unless PLUGIN_AUTH_TOKEN is set (plugin-runner images)
 
 # The pluggable seam is resolved ONCE at startup. The rest of this file talks to
 # `_model` purely through the EmbeddingModel interface, so swapping the backend
@@ -43,20 +46,37 @@ class EmbedRequest(BaseModel):
 class EmbedResponse(BaseModel):
     vector: list[float]
     dim: int
+    # The model that produced the vector (additive field; older clients ignore it).
+    model: str = ""
 
 
+# The same handlers are also served under /v1/..., the versioned plugin protocol
+# (see docs/PLUGIN_CONTRACTS.md). The unversioned routes stay for compatibility.
 @app.post("/embed", response_model=EmbedResponse)
+@app.post("/v1/embed", response_model=EmbedResponse)
 def embed(req: EmbedRequest) -> EmbedResponse:
     # The ONLY endpoint that matters for the cache loop -- the orchestrator
     # calls this first, on every query, before it ever talks to the vector store.
-    return EmbedResponse(vector=_model.embed(req.text), dim=_model.dim)
+    return EmbedResponse(vector=_model.embed(req.text), dim=_model.dim, model=_model.name)
 
 
 @app.get("/model-info")
+@app.get("/v1/model-info")
 def model_info() -> dict:
     # Not used in the core query loop -- just a way to ask "what model are you
     # actually running right now", useful for debugging/verification.
     return {"name": _model.name, "dim": _model.dim}
+
+
+@app.get("/v1/runner-info")
+def runner_info() -> dict:
+    # Lets the plugin platform prove the developer's package was discovered and
+    # selected in this runner image.
+    return {
+        "kind": "embedding",
+        "backend": models.selected(),
+        "registered_backends": models.registered(),
+    }
 
 
 @app.get("/health")

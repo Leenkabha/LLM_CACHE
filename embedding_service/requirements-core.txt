@@ -1,0 +1,6 @@
+# Runtime requirements WITHOUT the built-in sentence-transformers model.
+# Used to build small plugin-runner images: the built-in model is imported lazily,
+# so a runner whose plugin provides its own EmbeddingModel never needs torch.
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2

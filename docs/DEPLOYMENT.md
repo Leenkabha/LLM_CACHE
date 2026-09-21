@@ -98,3 +98,27 @@ docker compose -f docker-compose.prod.yml --env-file production.env down   # sto
 ```
 
 Redis data lives in the `redis_data` volume, so the cache survives restarts.
+
+## Optional: the plugin platform
+
+Everything above is unchanged and the plugin platform is **off**. To let administrators add plugins from the web UI:
+
+1. Set in `production.env`: `ENABLE_PLUGIN_INSTALLATION=true`, and `PLUGIN_SECRET_KEY` (`openssl rand -base64 32`). `ADMIN_TOKEN`
+   is already required. Back the key up separately from the Redis volume: without it stored plugin secrets cannot be read.
+2. Hosted-endpoint plugins now work: open `https://<your host>/plugins`. Endpoints must be https and public (the production
+   Compose file pins `ALLOW_INSECURE_PLUGIN_ENDPOINTS=false`).
+3. Image and GitHub-repository plugins additionally need the controller: set `PLUGIN_CONTROLLER_URL=http://plugin-controller:8090`
+   and `PLUGIN_CONTROLLER_TOKEN` (at least 16 characters) and start with the `plugins` profile:
+
+   ```bash
+   docker compose -f docker-compose.prod.yml --env-file production.env --profile plugins up --build -d
+   ```
+
+   **Read [PLUGIN_SECURITY.md](PLUGIN_SECURITY.md#the-docker-socket) first.** The controller needs a Docker daemon, which is
+   effectively root on that host. Prefer a dedicated build/plugin host or rootless Docker. Caddy still publishes only ports 80/443;
+   the controller and the socket proxy are not published.
+4. Enable vulnerability scanning if you can (`PLUGIN_SCANNER=trivy` with a trivy binary in the controller image, and
+   `PLUGIN_REQUIRE_SCAN=true`); without a scanner the scan is recorded as `skipped`.
+
+`/admin/*` and `/plugins` sit behind the same Caddy proxy and the same `ADMIN_TOKEN` protection; the admin API additionally
+rate-limits failed logins. Operate and troubleshoot with [PLUGIN_OPERATIONS.md](PLUGIN_OPERATIONS.md).

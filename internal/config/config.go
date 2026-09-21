@@ -43,6 +43,22 @@ type Config struct {
 	// report remaining quota). 0 means unknown/unlimited.
 	GeminiDailyRequestLimit int // e.g. 20 on the free tier
 	GeminiDailyTokenBudget  int // your own per-day token allowance
+
+	// Plugin platform. Everything here is off by default; with
+	// EnablePluginInstallation false the orchestrator behaves exactly as before
+	// and the /admin/plugins API does not exist. Parsing and validation of the
+	// values happens in internal/plugins/setup so this package stays dependency-free.
+	EnablePluginInstallation     bool   // ENABLE_PLUGIN_INSTALLATION
+	PluginSecretKey              string // PLUGIN_SECRET_KEY: base64 of 32 random bytes; encrypts plugin secrets
+	PluginControllerURL          string // PLUGIN_CONTROLLER_URL: internal controller; empty disables image/repository installs
+	PluginControllerToken        string // PLUGIN_CONTROLLER_TOKEN: shared secret with the controller
+	AllowInsecurePluginEndpoints bool   // ALLOW_INSECURE_PLUGIN_ENDPOINTS: http, loopback, private addresses (development only)
+	PluginRegistryBackend        string // PLUGIN_REGISTRY_BACKEND: redis (default) or memory
+	PluginBuildTimeout           string // PLUGIN_BUILD_TIMEOUT, e.g. 10m
+	PluginHealthTimeout          string // PLUGIN_HEALTH_TIMEOUT, e.g. 60s
+	PluginCPULimit               string // PLUGIN_CPU_LIMIT: default and ceiling per plugin, e.g. 1 or 500m
+	PluginMemoryLimit            string // PLUGIN_MEMORY_LIMIT: default and ceiling per plugin, e.g. 512Mi
+	PluginRollbackWindow         string // PLUGIN_ROLLBACK_WINDOW, e.g. 10m
 }
 
 func getenv(key, def string) string {
@@ -86,19 +102,39 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("GEMINI_DAILY_TOKEN_BUDGET must be a non-negative integer")
 	}
 
+	enablePlugins, err := strconv.ParseBool(getenv("ENABLE_PLUGIN_INSTALLATION", "false"))
+	if err != nil {
+		return Config{}, fmt.Errorf("ENABLE_PLUGIN_INSTALLATION must be true or false")
+	}
+	insecureEndpoints, err := strconv.ParseBool(getenv("ALLOW_INSECURE_PLUGIN_ENDPOINTS", "false"))
+	if err != nil {
+		return Config{}, fmt.Errorf("ALLOW_INSECURE_PLUGIN_ENDPOINTS must be true or false")
+	}
+
 	return Config{
-		AdminToken:      getenv("ADMIN_TOKEN", ""),
-		RateLimitPerMin: rateLimit,
-		TrustProxy:      trustProxy,
-		TopK:            topK,
-		Addr:            getenv("ORCH_ADDR", ":8080"),
-		EmbeddingURL:    getenv("EMBEDDING_URL", "http://localhost:8001"),
-		VectorStoreURL:  getenv("VECTORSTORE_URL", "http://localhost:8002"),
-		RedisAddr:       getenv("REDIS_ADDR", "localhost:6379"),
-		Threshold:       threshold,
-		Capacity:        capacity,
-		Policy:          getenv("CACHE_POLICY", "lru"),
-		LogFile:         getenv("LOG_FILE", "logs/orchestrator.log"),
+		EnablePluginInstallation:     enablePlugins,
+		PluginSecretKey:              getenv("PLUGIN_SECRET_KEY", ""),
+		PluginControllerURL:          getenv("PLUGIN_CONTROLLER_URL", ""),
+		PluginControllerToken:        getenv("PLUGIN_CONTROLLER_TOKEN", ""),
+		AllowInsecurePluginEndpoints: insecureEndpoints,
+		PluginRegistryBackend:        getenv("PLUGIN_REGISTRY_BACKEND", "redis"),
+		PluginBuildTimeout:           getenv("PLUGIN_BUILD_TIMEOUT", ""),
+		PluginHealthTimeout:          getenv("PLUGIN_HEALTH_TIMEOUT", ""),
+		PluginCPULimit:               getenv("PLUGIN_CPU_LIMIT", ""),
+		PluginMemoryLimit:            getenv("PLUGIN_MEMORY_LIMIT", ""),
+		PluginRollbackWindow:         getenv("PLUGIN_ROLLBACK_WINDOW", ""),
+		AdminToken:                   getenv("ADMIN_TOKEN", ""),
+		RateLimitPerMin:              rateLimit,
+		TrustProxy:                   trustProxy,
+		TopK:                         topK,
+		Addr:                         getenv("ORCH_ADDR", ":8080"),
+		EmbeddingURL:                 getenv("EMBEDDING_URL", "http://localhost:8001"),
+		VectorStoreURL:               getenv("VECTORSTORE_URL", "http://localhost:8002"),
+		RedisAddr:                    getenv("REDIS_ADDR", "localhost:6379"),
+		Threshold:                    threshold,
+		Capacity:                     capacity,
+		Policy:                       getenv("CACHE_POLICY", "lru"),
+		LogFile:                      getenv("LOG_FILE", "logs/orchestrator.log"),
 
 		EmbeddingBackend:   getenv("EMBEDDING_BACKEND", "http"),
 		VectorStoreBackend: getenv("VECTORSTORE_BACKEND", "http"),
